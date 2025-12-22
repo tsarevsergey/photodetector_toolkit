@@ -1,0 +1,28 @@
+# Environment Variables
+.env
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# IDEs
+.vscode/
+.idea/
+
+# Hardware Drivers / 3rd Party
+picosdk-python-wrappers/
+pico_python_wrappers/
+
+# Local Data/Artifacts
+*.log
+*.csv
+.pytest_cache/
+
+# Agent
+.agent/
+

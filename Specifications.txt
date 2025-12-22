@@ -1,0 +1,63 @@
+Here we will be developing a noise spectral analyser package. the software will contain several modules
+
+PURPOSE of the software.
+the software will be used to measure extended linear dynamic range and direct NEP of thin film photodetectors or Si calibration diode or resistor test for noise calibration
+
+Hardware
+
+-Keysight B2901 single channel SMU OR Keithey SMU (should be compatible with SCPI commands and PYvisa)
+-PicoScope 4262 for noise measurements , this is 16 bit oscilloscope
+-shielded electrical box with bottom illuminated detector trough a mask closer to real active area
+-FEMTO OE-200-IN1
+
+
+LED calibration:
+Setup, calibrated silicon detector connected to FEMTO amp, that is connected to scope. SMU is connected to LED
+Operator picks settings - calibration diode type, LED type, OD filter
+The SMU gives a square current controlled pulse frequency to the LED with a certain duty cycle (parameter) , frequency (parameter), current (parameter). The scope averages the pulse with x-averages to get SNR. For LDR measurements averaging can be used, for SNR - no averaging
+
+operator plays with the amplification to get good SNR for amplification x. 
+software measures the traces from scope for npulses (parameters). then performs averaging, and fourier transform. then obtains value at LED pulsing frequency vs the noise current value in the fourier transform
+
+if option (sweep) is activated then software asks to perform sweep. if confirmed if starts to reduce the LED current per pulse and observe the SNR until SNR is low OR if the low limit of LED current is hit (settings)
+
+software creates a folder with date_calibration_diodetype_OD_AMP and saves paremeters in the parameters.scv and averaged data, raw_data, FTR data in corresponding csv files, with timestamp. it also saves a txt file with a map of LED currents vs the file
+
+software creates a processed file which shows the current vs LED power for Si diode, taking into account the amplification parameter used (that is from the operator) the amplification parameter is put into the file as well. The file is saved with an OD filter in name and in the cal file.
+
+then operator keeps putting OD filters and increase the amplification, until the Si diode can not measure anymore, or we are hitting SNR limits. that is the calibraton. Finally we get the files for each OD filter with the calibrated light intensity
+
+
+Noise measurement:
+
+AN option to simply measure noise from a sample. Here we play with the amplification to get the highest possible signal before the overload, after which we collect noise data with the oscilloscope and perform the fourier transform. we can save the data then in a recalculated units from the amplification and device area
+
+LDR measurement procedure.
+
+the amplifier is manual, therefore we will need to manually choose the amplification
+
+the detector will be measured from high to low light or the opposite. 
+the detector is connected to amplifier and to oscilosope, SMU is connected to LED source
+
+the operator picks calibration file from calibration step, picks OD filter. The LED uses values of LED current from the calibration file
+software puts the highest current from the calibration file
+operator plays with an amplification to get the highest amplification before the overload. Software measures the responce in the same manner as for the calibration . software saves files until it gets tothe SNR limit, or the LED settings limit
+
+once it hits the limits, the data is saved and then operator puts higher amplification. The software then pick up data from the next calibration file with the same amplification and other parameters as for Si. Operator changes the amplification higher. The software measures the same sweep as in the silicon calibration. The procedure stays until it we cannot lineariy measure the responce
+
+
+
+DATA gained.
+we get data for calibration detector and for measurement detectors.
+
+1- current density vs optical power (W)
+2- NEP w averaging
+3- NEP without averaging
+
+
+
+Technical stack
+controlling Keysight :PYVISA
+scope : dedicated SDK from picoscope
+general language :python
+graphing plus plotting : ?? steamlit? some other things?
