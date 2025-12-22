@@ -41,8 +41,9 @@ class SMUController(BaseInstrumentController):
         try:
             self.rm = pyvisa.ResourceManager()
             
-            # Open with a timeout
-            self.resource = self.rm.open_resource(self.address, open_timeout=2000)
+            # Open with a timeout (default 20s for long lists)
+            self.resource = self.rm.open_resource(self.address, open_timeout=20000)
+            self.resource.timeout = 20000 # Set communication timeout to 20s
             
             # Attempt to clear the bus if possible (Fix for some lock states)
             try:
@@ -112,7 +113,7 @@ class SMUController(BaseInstrumentController):
             - compliance_voltage (float): Voltage limit in Volts.
             - current_range (float, optional): Measurement/Source range.
         """
-        self.require_state([InstrumentState.IDLE, InstrumentState.CONFIGURED, InstrumentState.ARMED])
+        self.require_state([InstrumentState.IDLE, InstrumentState.CONFIGURED, InstrumentState.ARMED, InstrumentState.RUNNING])
         
         compliance = settings.get("compliance_voltage", 2.0)
         
@@ -173,16 +174,21 @@ class SMUController(BaseInstrumentController):
 
     def set_current(self, amps: float) -> None:
         """Sets the DC source current immediately."""
-        self.require_state([InstrumentState.IDLE, InstrumentState.CONFIGURED, InstrumentState.ARMED, InstrumentState.RUNNING])
-
+        # Allow recovery from ERROR if we are just trying to zero the output
+        self.require_state([InstrumentState.IDLE, InstrumentState.CONFIGURED, InstrumentState.ARMED, InstrumentState.RUNNING, InstrumentState.ERROR])
+        
         if self.mock:
-            self.logger.info(f"MOCK: Setting current to {amps} A")
+            self.logger.info(f"MOCK: Set Current {amps} A")
             self._current_source_amps = amps
             return
 
         try:
+            self.resource.write(f"SOUR:FUNC:MODE CURR") 
             self.resource.write(f"SOUR:CURR {amps}")
             self._current_source_amps = amps
+            # If we succeed, we are at least IDLE or CONFIGURED. If we were ERROR, we might be OK now?
+            if self.state == InstrumentState.ERROR:
+                self.to_state(InstrumentState.IDLE)
         except Exception as e:
             self.handle_error(f"Failed to set current: {e}")
 
@@ -255,25 +261,24 @@ class SMUController(BaseInstrumentController):
              return
 
         try:
+            # Try to abort first if we are stuck in a trigger wait
+            try: self.resource.write("ABOR") 
+            except: pass
+            
             self.resource.write("OUTP OFF")
             self._output_enabled = False
             self.to_state(InstrumentState.IDLE)
         except Exception as e:
-            # If we fail to disable, we are in big trouble, stay in ERROR
+            # If we fail to disable, we are in big trouble.
+            # Try a low level interface clear if it's a timeout
+            if "VI_ERROR_TMO" in str(e) or "Timeout" in str(e):
+                self.logger.critical("VISA Timeout during disable. Attempting Interface Clear.")
+                try:
+                    self.resource.clear() # VISA `viClear`
+                except:
+                    pass
             self.handle_error(f"Failed to disable output: {e}")
 
-        if self.mock:
-            self.logger.info("MOCK: Output DISABLED")
-            self._output_enabled = False
-            self.to_state(InstrumentState.IDLE) # Back to IDLE
-            return
-
-        try:
-            self.resource.write("OUTP OFF")
-            self._output_enabled = False
-            self.to_state(InstrumentState.IDLE)
-        except Exception as e:
-            self.handle_error(f"Failed to disable output: {e}")
 
     def setup_list_sweep(self, points: list[float], source_mode: str, time_per_step: float, trigger_count: int = 1) -> None:
         """
@@ -286,7 +291,7 @@ class SMUController(BaseInstrumentController):
             trigger_count: Number of times to repeat the list (or length of list logic). 
                            Usually 1 sweep through the list.
         """
-        self.require_state([InstrumentState.IDLE, InstrumentState.CONFIGURED])
+        self.require_state([InstrumentState.IDLE, InstrumentState.CONFIGURED, InstrumentState.RUNNING, InstrumentState.ERROR])
         
         source_mode = source_mode.upper()
         if source_mode not in ['VOLT', 'CURR']:
@@ -411,7 +416,7 @@ class SMUController(BaseInstrumentController):
         Note: Precise pulsing often requires specific model-dependent commands (List sweep vs Pulse mode).
         This implementation assumes a Keysight B2900 style list sweep for broad compatibility or Mocking.
         """
-        self.require_state([InstrumentState.IDLE, InstrumentState.CONFIGURED])
+        self.require_state([InstrumentState.IDLE, InstrumentState.CONFIGURED, InstrumentState.RUNNING])
         
         if self.mock:
             self.logger.info(f"MOCK: Configured Pulse. High={high_amps}, Low={low_amps}, Width={pulse_width}, Period={period}")
@@ -458,4 +463,3 @@ class SMUController(BaseInstrumentController):
         except Exception as e:
             self.handle_error(f"Measurement failed: {e}")
             return {'voltage': 0.0, 'current': 0.0}
-

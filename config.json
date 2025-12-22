@@ -1,0 +1,16 @@
+{
+    "base_save_folder": "data",
+    "save_raw_traces": true,
+    "last_led_wavelength": 461.0,
+    "last_ref_file": "data/SiDiodeResponsivity.csv",
+    "last_meas_file": "data/Si_cal1.csv",
+    "snr_threshold": 20.0,
+    "min_cycles": 100,
+    "led_compliance": 9.0,
+    "averages": 3,
+    "resistor": 1000.0,
+    "sweep_start": 0.005,
+    "sweep_stop": 2e-05,
+    "sweep_steps": 2,
+    "capture_delay_cycles": 50
+}

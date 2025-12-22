@@ -21,6 +21,7 @@ pico_python_wrappers/
 # Local Data/Artifacts
 *.log
 *.csv
+data/
 .pytest_cache/
 
 # Agent

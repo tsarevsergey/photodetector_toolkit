@@ -8,7 +8,6 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from hardware.smu_controller import SMUController, InstrumentState
-from pages.__pycache__ import * # Trick to ensure paths? No, not needed.
 
 st.set_page_config(page_title="SMU List Sweep / Pulse Generator", layout="wide")
 
@@ -195,8 +194,16 @@ with tab_pulse:
     with c_act2:
         is_armed = smu.state == InstrumentState.ARMED
         
-        if st.button("2. TRIGGER (Pulse Only)", type="primary", disabled=not is_armed):
+        if st.button("2. TRIGGER (Pulse Only)", type="primary"):
              try:
+                # Auto-Arm if not ready
+                if smu.state not in [InstrumentState.ARMED, InstrumentState.RUNNING]:
+                    smu.disable_output()
+                    comp_type = "VOLT" if mode_str == "CURR" else "CURR"
+                    smu.set_compliance(comp_val, comp_type)
+                    count = cycles if cycles > 0 else 10000 
+                    smu.generate_square_wave(high_val, low_val, period, duty, count, mode_str)
+                
                 smu.enable_output()
                 smu.trigger_list()
                 st.success("Trigger sent!")
@@ -217,7 +224,7 @@ with tab_pulse:
         st.markdown("### Pulse & Measure Logic")
         
         # User requested manual overrides for Scope
-        c_sc1, c_sc2, c_sc3 = st.columns(3)
+        c_sc1, c_sc2, c_sc3, c_sc4 = st.columns(4)
         with c_sc1:
              # Default 10V as per LDR workflow
              scope_range = st.selectbox("Scope Range", ["10V", "5V", "2V", "1V", "500mV", "200mV"], index=0)
@@ -226,12 +233,18 @@ with tab_pulse:
              override_dur = st.number_input("Capture Duration (s)", value=calc_dur, format="%.4f")
         with c_sc3:
              pts = st.number_input("Samples", value=2000)
+        with c_sc4:
+             ac_coupling = st.checkbox("AC Coupling", value=False)
+        
+        # New: Cycle Delay
+        delay_cycles = st.slider("Measurement Delay (Cycles)", 0, max(1, int(cycles)-1) if cycles>0 else 1000, 0, help="Delay capture by N cycles after trigger.")
 
         if st.button("🚀 Trigger & Measure Pulse", type="primary", use_container_width=True):
              try:
                  # 1. Config Scope
                  tb = scope.calculate_timebase_index(override_dur, pts)
-                 scope.configure_channel('A', True, scope_range)
+                 coupling_str = 'AC' if ac_coupling else 'DC'
+                 scope.configure_channel('A', True, scope_range, coupling_str)
                  # Wait for relay to switch if range changed
                  time.sleep(0.1) 
                  
@@ -245,6 +258,10 @@ with tab_pulse:
                  
                  smu.enable_output()
                  smu.trigger_list() # Starts the train
+                 
+                 # Optional Delay
+                 if delay_cycles > 0:
+                     time.sleep(period * delay_cycles)
                  
                  # 3. Capture
                  st.caption(f"Capturing {override_dur*1000:.1f}ms...")

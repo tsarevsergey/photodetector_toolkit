@@ -1,12 +1,14 @@
-
 import time
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Callable
 import logging
+import os
 
-from hardware.smu_controller import SMUController
+from hardware.smu_controller import SMUController, InstrumentState
 from hardware.scope_controller import ScopeController
+from hardware.scope_controller import ScopeController
+import analysis.signal_processing as signal_processing
 
 class ResistorChangeRequiredException(Exception):
     def __init__(self, step_index, snr, current_level, last_results, last_waveforms):
@@ -22,6 +24,7 @@ class LDRWorkflow:
         self.scope = scope
         self.logger = logging.getLogger("workflow.LDR")
         self.stop_requested = False
+        self.mock = smu.mock or scope.mock
         
     def run_sweep(self, 
                   start_current: float, 
@@ -36,10 +39,16 @@ class LDRWorkflow:
                   auto_range: bool = False,
                   ac_coupling: bool = False,
                   min_snr_threshold: float = 25.0,
+                  start_delay_cycles: int = 0,
+                  min_pulse_cycles: int = 100, 
                   progress_callback: Callable[[float, str], None] = None,
                   start_step_index: int = 0,
                   previous_results: list = None,
-                  previous_waveforms: list = None) -> (pd.DataFrame, list):
+                  previous_waveforms: list = None,
+                  autosave_path: str = None) -> tuple[pd.DataFrame, list[dict]]:
+        """
+        Executes the LDR sweep.
+        """
         
         self.stop_requested = False
         results = previous_results if previous_results else []
@@ -58,20 +67,29 @@ class LDRWorkflow:
         
         # Scope settings
         period = 1.0 / frequency
-        # Capture enough for ~4 periods min to ensure good Vpp measure
-        capture_duration = max(4 * period, 0.02) 
+        # Capture enough for ~20 periods to ensure good spectral resolution (PSD)
+        capture_duration = max(20 * period, 0.05) 
         
-        num_samples = 2000
+        num_samples = 16000 # More samples for better FFT bin resolution
         tb_index = self.scope.calculate_timebase_index(capture_duration, num_samples)
         
         # 1. Start with Output OFF to ensure clean state
-        # Force disable to reset any previous states
         try:
+             self.smu.set_current(0.0) # Set to 0A first
              self.smu.disable_output()
         except: 
              pass
              
-        time.sleep(0.5) # Allow relays to open
+        time.sleep(0.5) 
+        
+        # 2. Enable output ONCE before the sweep starts
+        try:
+            self.smu.set_compliance(compliance_limit, "VOLT")
+            self.smu.enable_output()
+            self.logger.info("SMU Output enabled for entire sweep.")
+        except Exception as e:
+            self.logger.error(f"Failed to enable SMU output: {e}")
+            raise e
         
         # Available ranges ordered Low to High
         range_list = ['10MV', '20MV', '50MV', '100MV', '200MV', '500MV', '1V', '2V', '5V', '10V']
@@ -89,6 +107,7 @@ class LDRWorkflow:
             curr_range_idx = 9 # Default 10V
             
         self.logger.info(f"Starting LDR Sweep: {steps} steps (Running {len(levels_to_run)}), {start_current:.2e}A -> {stop_current:.2e}A, Freq={frequency}Hz, Start Range={range_list[curr_range_idx]}")
+        print(f"DEBUG: autosave_path received = '{autosave_path}'")
         
         # Loop
         for i, current_level in levels_to_run:
@@ -99,10 +118,12 @@ class LDRWorkflow:
             
             try:
                 # --- STEP 1: TEARDOWN / RESET ---
-                # "Configure & Arm" button equivalent
-                try: self.smu.resource.write("ABOR") 
+                # We stay in "OUTP ON" state but stop any running sequences
+                try: 
+                    self.smu.resource.write("ABOR") 
+                    self.smu.set_current(0.0) # Ensure 0A between steps
                 except: pass
-                self.smu.disable_output()
+                
                 # Fast reset
                 time.sleep(0.1)
                 
@@ -124,9 +145,14 @@ class LDRWorkflow:
                     self.smu.set_compliance(compliance_limit, "VOLT")
                     
                     # Pulse Logic
+                    
                     total_capture_time = (capture_duration + 0.2) * averages
-                    req_cycles = int(total_capture_time / period) + 10
+                    # Add delay time to required cycles
+                    delay_time = start_delay_cycles * period
+                    req_cycles = int((total_capture_time + delay_time) / period) + 10
                     if req_cycles < 10: req_cycles = 10
+                    # Enforce user minimum
+                    if req_cycles < min_pulse_cycles: req_cycles = min_pulse_cycles
                     
                     self.smu.generate_square_wave(current_level, 0.0, period, duty_cycle, req_cycles, "CURR")
                     
@@ -136,7 +162,13 @@ class LDRWorkflow:
                     
                     # --- STEP 3: ENABLE & RUN ---
                     self.smu.enable_output()
-                    time.sleep(0.5) 
+                    self.smu.trigger_list() # Starts the train
+                    
+                    # Optional user delay (Warm-up / Settle)
+                    if start_delay_cycles > 0:
+                        # Sleep for N cycles before starting capture
+                        # SMU is already running in background
+                        time.sleep(delay_time)
                     self.smu.trigger_list()
                     
                     # --- STEP 4: CAPTURE TRIAL ---
@@ -174,7 +206,7 @@ class LDRWorkflow:
                                 print(f"[AutoRange] {msg}")
                                 curr_range_idx += 1
                                 # Cleanup and Retry
-                                self.smu.disable_output()
+                                self.smu.set_current(0.0)
                                 try: self.smu.resource.write("ABOR") 
                                 except: pass
                                 time.sleep(0.2)
@@ -204,7 +236,7 @@ class LDRWorkflow:
                                  curr_range_idx -= 1
                                  
                                  # Cleanup and Retry
-                                 self.smu.disable_output()
+                                 self.smu.set_current(0.0)
                                  try: self.smu.resource.write("ABOR") 
                                  except: pass
                                  time.sleep(0.2)
@@ -219,7 +251,7 @@ class LDRWorkflow:
                                  self.logger.info(msg)
                                  print(f"[AutoRange] {msg}")
                                  curr_range_idx -= 1
-                                 self.smu.disable_output()
+                                 self.smu.set_current(0.0)
                                  try: self.smu.resource.write("ABOR") 
                                  except: pass
                                  time.sleep(0.2)
@@ -228,34 +260,79 @@ class LDRWorkflow:
                     # If we are here, range is Good or acceptable
                     # Now perform the actual averaging and SNR calculation
                     vpps = []
-                    snrs = []
-                    step_waveforms = None # Initialize to avoid UnboundLocalError
+                    lockin_amps = [] # New
+                    noise_densities = [] # New
+                    snrs_fft = [] # Spectral (One shot)
+                    snrs_time = [] # Time Domain (Averaged)
+                    step_waveforms = {} # Initialize to avoid UnboundLocalError
                     
                     for avg_idx in range(averages):
                          if self.stop_requested: break
                          
-                         # If this is the first average, we already have 'times' and 'volts' from the range check
-                         if avg_idx == 0:
-                             # Use the 'volts' from the range check
-                             pass 
-                         else:
-                             times, volts = self.scope.capture_block(tb_index, num_samples)
+                         # Capture blocks
+                         times, volts = self.scope.capture_block(tb_index, num_samples)
                          
                          if len(volts) > 0:
-                            # analyze Pulse
-                            v_high, v_low, vpp, snr = self.analyze_pulse_snr(volts)
-                            vpps.append(vpp)
-                            snrs.append(snr)
-                            
-                            # Store last waveform
-                            if avg_idx == averages - 1:
-                                step_waveforms = {
-                                    "current": current_level,
-                                    "times": times[::4], 
-                                    "volts": volts[::4],
-                                    "snr": snr,
-                                    "r_ohms": resistor_ohms
-                                }
+                             # analyze Pulse (Time Domain) - used for averaging Vpp
+                             v_high, v_low, vpp, s_time = self.analyze_pulse_snr(volts)
+                             vpps.append(vpp)
+                             snrs_time.append(s_time)
+                             
+                             # analyze Pulse (Frequency Domain)
+                             # IMPORTANT: We only calculate Noise/SNR from the FIRST block (or result averaging)
+                             # to avoid "artificially reducing noise" via block averaging.
+                             if avg_idx == 0:
+                                 if len(times) > 1:
+                                     fs = 1.0 / (times[1] - times[0])
+                                     s_fft = signal_processing.calculate_snr_fft(volts, fs, frequency)
+                                     snrs_fft.append(s_fft)
+                                     
+                                     # Prep FFT for Storage
+                                     win = np.hamming(len(volts))
+                                     ft = np.fft.rfft((volts - np.mean(volts)) * win)
+                                     # Standard normalization: 2.0 / sum(window)
+                                     mag = np.abs(ft) * (2.0 / np.sum(win))
+                                     ffreqs = np.fft.rfftfreq(len(volts), 1/fs)
+                                 else:
+                                     snrs_fft.append(s_time)
+                                     ffreqs, mag = np.array([]), np.array([])
+                             
+                             # Store last waveform (Raw)
+                             if avg_idx == 0:
+                                 step_waveforms = {
+                                     "current": current_level,
+                                     "times": times[::2], # Light downsample for UI speed
+                                     "volts": volts[::2],
+                                     "fft_freqs": ffreqs, # Keep full FFT for accuracy
+                                     "fft_mag": mag,
+                                     "snr_fft": snrs_fft[0],
+                                     "snr_time": snrs_time[0],
+                                     "r_ohms": resistor_ohms
+                                 }
+                         
+                         # Autosave Trace (If enabled and path provided)
+                         if autosave_path and len(times) > 0:
+                             try:
+                                 # Ensure directory exists (workflow safety)
+                                 # Although UI creates it, we double check.
+                                 if not os.path.exists(autosave_path):
+                                     os.makedirs(autosave_path, exist_ok=True)
+                                 
+                                 # Filename: trace_step_{i}_{Current}.csv
+                                 # Use 'i' (step index) and 'current_level'
+                                 filename = f"trace_step_{i+1}_I{current_level:.2e}A_avg{avg_idx+1}.csv"
+                                 # Sanitize filename if needed (scientific notation is mostly safe on windows, wait, colon is not safe!)
+                                 # .2e gives 1.00e-03 which is safe.
+                                 
+                                 full_path = os.path.join(autosave_path, filename)
+                                 
+                                 # Save DataFrame
+                                 # Use light downsample? No, raw trace requested.
+                                 df_trace = pd.DataFrame({'time': times, 'voltage': volts})
+                                 df_trace.to_csv(full_path, index=False)
+                                 # self.logger.info(f"Saved trace: {filename}")
+                             except Exception as exc:
+                                 self.logger.error(f"Failed to autosave trace {filename}: {exc}")
                          
                          time.sleep(0.05)
                     
@@ -274,7 +351,7 @@ class LDRWorkflow:
                     elapsed += 0.1
                 
                 # --- STEP 5: CLEANUP ---
-                self.smu.disable_output()
+                self.smu.set_current(0.0)
                 try: self.smu.resource.write("ABOR") 
                 except: pass
                 
@@ -285,29 +362,52 @@ class LDRWorkflow:
                      
                 avg_vpp = np.mean(vpps)
                 std_vpp = np.std(vpps)
-                avg_snr = np.mean(snrs) if snrs else 0.0
+                avg_snr_time = np.mean(snrs_time)
+                avg_snr_fft = snrs_fft[0] if snrs_fft else 0
                 
-                photocurrent = abs(avg_vpp) / resistor_ohms
+                # Lock-In Results
+                avg_lockin_amp = np.mean(lockin_amps) if lockin_amps else 0
+                avg_noise_dens = np.mean(noise_densities) if noise_densities else 0
+                
+                # Adjusted SNR: Signal (LockIn) / NoiseFloor (Density * sqrt(BW?))
+                # For direct SNR ratio: LockIn / (NoiseDens * sqrt(1Hz)) = Signal/Noise_in_1Hz
+                # Technically SNR = Power ratio? 
+                # Let's report "SNR_1Hz" = (V_sig / V_noise_rtHz)**2 ??
+                # Or just Amplitude SNR: V_sig / V_noise_rtHz
+                
+                calc_snr_1hz = 0
+                if avg_noise_dens > 0:
+                     calc_snr_1hz = avg_lockin_amp / avg_noise_dens
+                
+                # Photocurrent from LockIn (More accurate than Vpp)
+                photocurrent = avg_lockin_amp / resistor_ohms
                 
                 results.append({
                     "LED_Current_A": current_level,
                     "Scope_Vpp": avg_vpp,
                     "Vpp_Std": std_vpp,
-                    "SNR": avg_snr,
+                    "SNR_Time": avg_snr_time,
+                    "SNR_FFT": avg_snr_fft,
                     "Photocurrent_A": photocurrent,
                     "Resistance_Ohms": resistor_ohms,
-                    "SNR_Status": "OK" if avg_snr > 10 else "LOW"
+                    "SNR_Status": "OK" if calc_snr_1hz > min_snr_threshold else "LOW",
+                    "LockIn_Amp_V": avg_lockin_amp,
+                    "Noise_Density_V_rtHz": avg_noise_dens,
+                    "SNR_Broadband": calc_snr_1hz # Renaming for clarity?
                 })
                 
-                print(f"[{i+1}/{steps}] I={current_level:.2e}A -> Vpp={avg_vpp*1000:.1f}mV (SNR={avg_snr:.1f})")
+                print(f"[{i+1}/{steps}] I={current_level:.2e}A -> Sig={avg_lockin_amp*1000:.1f}mV, Noise={avg_noise_dens*1e6:.1f}uV/rtHz")
                 
-                # Check SNR Trigger
-                # Threshold from args
-                if avg_snr < min_snr_threshold:
-                     self.logger.info(f"SNR Low ({avg_snr:.1f} < {min_snr_threshold}). Pausing for Resistor check.")
-                     # We raise exception to return control to UI
-                     # Pass current state. User will decide whether to Retry (pop last result) or Continue (keep last result).
-                     raise ResistorChangeRequiredException(i, avg_snr, current_level, results, waveforms)
+                # Check SNR Trigger (Using LockIn SNR)
+                if calc_snr_1hz < min_snr_threshold:
+                    self.logger.warning(f"SNR ({calc_snr_1hz:.1f}) below threshold ({min_snr_threshold})")
+                    # Safely disable SMU output before raising pause exception
+                    try:
+                        self.smu.set_current(0.0)
+                        self.smu.disable_output()
+                    except:
+                        pass
+                    raise ResistorChangeRequiredException(i, calc_snr_1hz, current_level, results, waveforms)
 
             except ResistorChangeRequiredException:
                 raise # Re-raise immediately to bubbling up
@@ -329,6 +429,13 @@ class LDRWorkflow:
                 except: 
                     pass
                 
+        # Final Cleanup: Always ensure output is off when finished
+        try:
+            self.smu.set_current(0.0)
+            self.smu.disable_output()
+        except:
+            pass
+            
         return pd.DataFrame(results), waveforms
 
     def analyze_pulse_snr(self, volts: np.ndarray) -> (float, float, float, float):
