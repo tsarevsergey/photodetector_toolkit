@@ -207,10 +207,61 @@ with tab_measure:
         st.divider()
         
         # Amplifier Gain
-        voltage_limit = st.number_input("LED Compliance Voltage (V)", value=st.session_state.pref_compliance, min_value=1.0, max_value=20.0, step=0.5, key='w_compliance')
+        st.write("#### Amplifier Settings")
         
-        # Load Resistor (Crucial for linearity)
-        r_val = st.number_input("Load Resistance (Ω)", value=st.session_state.sweep_resistor, format="%.1f", help="Adjust this to match your physical resistor. Lower values (e.g. 1k) improve high-current linearity.", key='sweep_resistor')
+        # We allow changing the Global Config from here for convenience during measurement
+        if 'global_amp_type' not in st.session_state:
+            st.session_state.global_amp_type = "Passive Resistor"
+            
+        current_type = st.session_state.global_amp_type
+        
+        # Amp Type Selection (Read Only / Display)
+        # To change Type, use Sidebar (major config change). 
+        # But Gain can be changed here.
+        st.info(f"Amplifier Mode: **{current_type}** (Change in Sidebar if needed)")
+        
+        if current_type == "FEMTO TIA":
+            # TIA Gain Selector
+            femto_gains = {
+                "10^3 (1k)": 1e3, "10^4 (10k)": 1e4, "10^5 (100k)": 1e5, 
+                "10^6 (1M)": 1e6, "10^7 (10M)": 1e7, "10^8 (100M)": 1e8, 
+                "10^9 (1G)": 1e9, "10^10 (10G)": 1e10, "10^11 (100G)": 1e11
+            }
+            # Find current key
+            curr_val = st.session_state.get('global_tia_gain', 1000.0)
+            def_idx = 4 # 10M default
+            keys = list(femto_gains.keys())
+            for i, k in enumerate(keys):
+                if femto_gains[k] == curr_val:
+                    def_idx = i
+                    break
+            
+            # Widget
+            sel_gain = st.selectbox("TIA Gain (V/A)", keys, index=def_idx, key='ldr_tia_gain_local')
+            
+            # Update Global
+            new_val = femto_gains[sel_gain]
+            if new_val != curr_val:
+                st.session_state.global_tia_gain = new_val
+                # Rerun to propagate? Not strictly needed if r_val is assigned below
+                st.rerun() 
+            
+            r_val = new_val
+            amp_mode = "FEMTO TIA"
+            
+        else:
+            # Resistor Input
+            curr_r = st.session_state.get('global_resistor_val', 1000.0)
+            new_r = st.number_input("Gain (Resistor) (Ω)", value=curr_r, format="%.2f", key='ldr_resistor_local')
+            
+            if new_r != curr_r:
+                st.session_state.global_resistor_val = new_r
+                st.rerun()
+                
+            r_val = new_r
+            amp_mode = "Passive Resistor"
+        
+        voltage_limit = st.number_input("LED Compliance Voltage (V)", value=st.session_state.pref_compliance, min_value=1.0, max_value=20.0, step=0.5, key='w_compliance')
         
         averages = st.number_input("Averages per Step", value=st.session_state.pref_averages, min_value=1, max_value=20, key='w_averages')
         
@@ -257,13 +308,28 @@ if 'paused_state' in st.session_state:
     # Actually, we should ask user to confirm they changed it.
     # But we update the 'r_val' field... wait, r_val is an input widget. 
     # The user can just change the r_val widget above!
-    st.write("👉 **Action Required:** Change to a larger Load Resistor (e.g. 10x higher), update the 'Load Resistance' field above, then click Resume.")
+    if st.session_state.get('global_amp_type') == "FEMTO TIA":
+         st.write("👉 **Action Required:** Increase the **TIA Gain** in the 'Amplifier Settings' block above, then click Resume.")
+    else:
+         st.write("👉 **Action Required:** Switch to a larger **Gain (Resistor)** (e.g. 10x higher), update the 'Gain (Resistor)' field above, then click Resume.")
+    
+    if 'resume_action' not in st.session_state: st.session_state.resume_action = None
+    
+    disable_btns = st.session_state.resume_action is not None
     
     c_res1, c_res2 = st.columns(2)
-    resume = c_res1.button("✅ Resume (Re-measure Step)", type="primary")
-    skip = c_res2.button("⏩ Skip/Keep (Accept Noisy Data)")
+    c_res1.button("✅ Resume (Re-measure Step)", type="primary", 
+                  on_click=st.session_state.__setitem__, args=('resume_action', 'resume'),
+                  disabled=disable_btns)
+    c_res2.button("⏩ Skip/Keep (Accept Noisy Data)",
+                  on_click=st.session_state.__setitem__, args=('resume_action', 'skip'),
+                  disabled=disable_btns)
     
-    if resume or skip:
+    if st.session_state.resume_action:
+        # Wrap everything to ensure we clear the action flag eventually
+        action = st.session_state.resume_action
+        resume = (action == 'resume')
+        
         workflow = LDRWorkflow(smu, scope)
         start_idx = state['step_index'] if resume else state['step_index'] + 1
         
@@ -280,30 +346,37 @@ if 'paused_state' in st.session_state:
         # Simpler: "Skip" just means "Start form next step". We lose the bad point. That's fine.
         
         try:
-             df, wfs = workflow.run_sweep(
-                start_current=start_i,
-                stop_current=stop_i,
-                steps=steps,
-                frequency=freq,
-                duty_cycle=duty,
-                compliance_limit=voltage_limit,
-                resistor_ohms=r_val,
-                averages=averages,
-                scope_range=scope_range_val,
-                auto_range=auto_range,
-                ac_coupling=ac_coupling,
-                start_delay_cycles=delay_cycles,
-                min_pulse_cycles=st.session_state.pref_min_cycles,
-                min_snr_threshold=st.session_state.pref_snr_threshold,
-                progress_callback= lambda p, m: status_text.text(m), # Simple callback
-                start_step_index=start_idx,
-                previous_results=state['results'],
-                previous_waveforms=state['waveforms'],
-                autosave_path=st.session_state.get('last_autosave_path', None),
-                acquisition_mode=st.session_state.pref_acq_mode,
-                sample_rate=st.session_state.pref_sample_rate,
-                capture_duration_sec=st.session_state.pref_duration
-            )
+             try:
+                 # SAFETY: Latch High Water Mark
+                 max_current_allowed = max(start_i, stop_i)
+                 smu.set_software_current_limit(max_current_allowed)
+                 
+                 df, wfs = workflow.run_sweep(
+                    start_current=start_i,
+                    stop_current=stop_i,
+                    steps=steps,
+                    frequency=freq,
+                    duty_cycle=duty,
+                    compliance_limit=voltage_limit,
+                    resistor_ohms=r_val,
+                    averages=averages,
+                    scope_range=scope_range_val,
+                    auto_range=auto_range,
+                    ac_coupling=ac_coupling,
+                    start_delay_cycles=delay_cycles,
+                    min_pulse_cycles=st.session_state.pref_min_cycles,
+                    min_snr_threshold=st.session_state.pref_snr_threshold,
+                    progress_callback= lambda p, m: status_text.text(m), # Simple callback
+                    start_step_index=start_idx,
+                    previous_results=state['results'],
+                    previous_waveforms=state['waveforms'],
+                    autosave_path=st.session_state.get('last_autosave_path', None),
+                    acquisition_mode=st.session_state.pref_acq_mode,
+                    sample_rate=st.session_state.pref_sample_rate,
+                    capture_duration_sec=st.session_state.pref_duration
+                )
+             finally:
+                 smu.set_software_current_limit(None)
              
              # Success
              st.session_state.ldr_last_results = df
@@ -391,8 +464,30 @@ if 'paused_state' in st.session_state:
                  st.error(f"Sweep failed: {e}")
                  import traceback
                  st.write(traceback.format_exc())
+                 
+        finally:
+             st.session_state.resume_action = None
 
 if start_btn and 'paused_state' not in st.session_state:
+    # --- SAFETY INTERLOCKS ---
+    
+    # 1. Monotonicity Check (High -> Low)
+    if start_i < stop_i:
+        st.error("❌ SAFETY ERROR: Sweep must be Descending (High Current -> Low Current).")
+        st.info("The system requires monotonically decreasing current to ensure amplifier safety (Start High -> End Low).")
+        st.stop()
+        
+    # 2. Global Current Limit (High Water Mark)
+    # Ensure SMU never exceeds the START current during this run.
+    max_current_allowed = max(start_i, stop_i)
+    smu.set_software_current_limit(max_current_allowed)
+    st.toast(f"🔒 Safety Latch Set: Max Current {max_current_allowed:.2e} A")
+       
+    # 3. TIA Warning (User Responsibility for Gain)
+    if 'global_amp_type' in st.session_state and st.session_state.global_amp_type == "FEMTO TIA":
+         st.warning("⚠️ **TIA Active**: Ensure selected Gain is safe for the START current!")
+         time.sleep(1.0)
+
     # Update Preferences
     st.session_state.pref_averages = averages
     st.session_state.pref_compliance = voltage_limit
@@ -462,27 +557,31 @@ if start_btn and 'paused_state' not in st.session_state:
             final_save_path = None # Disable saving if we can't create folder
 
     try:
-        results, waveforms = workflow.run_sweep(
-            start_current=start_i,
-            stop_current=stop_i,
-            steps=steps,
-            frequency=freq,
-            duty_cycle=duty,
-            resistor_ohms=r_val,
-            averages=averages,
-            compliance_limit=voltage_limit,
-            scope_range=scope_range_val,
-            auto_range=auto_range,
-            ac_coupling=ac_coupling,
-            min_snr_threshold=st.session_state.pref_snr_threshold,
-            min_pulse_cycles=st.session_state.pref_min_cycles,
-            start_delay_cycles=delay_cycles,
-            progress_callback=update_ui,
-            autosave_path=autosave_path_val,
-            acquisition_mode=st.session_state.pref_acq_mode,
-            sample_rate=st.session_state.pref_sample_rate,
-            capture_duration_sec=st.session_state.pref_duration
-        )
+        try:
+            results, waveforms = workflow.run_sweep(
+                start_current=start_i,
+                stop_current=stop_i,
+                steps=steps,
+                frequency=freq,
+                duty_cycle=duty,
+                resistor_ohms=r_val,
+                averages=averages,
+                compliance_limit=voltage_limit,
+                scope_range=scope_range_val,
+                auto_range=auto_range,
+                ac_coupling=ac_coupling,
+                min_snr_threshold=st.session_state.pref_snr_threshold,
+                min_pulse_cycles=st.session_state.pref_min_cycles,
+                start_delay_cycles=delay_cycles,
+                progress_callback=update_ui,
+                autosave_path=autosave_path_val,
+                acquisition_mode=st.session_state.pref_acq_mode,
+                sample_rate=st.session_state.pref_sample_rate,
+                capture_duration_sec=st.session_state.pref_duration
+            )
+        finally:
+            # ALWAYS Release Safety Latch
+            smu.set_software_current_limit(None)
         
         status_text.success("Sweep Complete!")
         progress_bar.progress(1.0)

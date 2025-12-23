@@ -91,7 +91,11 @@ with tab_ldr:
     
     st.subheader("Load DUT Data")
     # File selector for DUT data
-    dut_file = st.selectbox("Select LDR Measurement File", options=data_files, key='an_dut_sel')
+    c_dut1, c_dut2 = st.columns(2)
+    with c_dut1:
+         dut_file = st.selectbox("Select LDR Measurement File", options=data_files, key='an_dut_sel')
+    with c_dut2:
+         dev_area = st.number_input("Device Active Area (cm²)", value=1.0, format="%.4f")
     
     if st.button("Analyze LDR Data"):
         if not dut_file:
@@ -139,6 +143,9 @@ with tab_ldr:
                 if 'Photocurrent_A' not in df_dut.columns:
                     st.error("File must contain 'LED_Current_A' and 'Photocurrent_A' columns.")
                     st.stop()
+                
+                # Calculate Current Density (J)
+                df_dut['Current_Density_A_cm2'] = df_dut['Photocurrent_A'] / dev_area
                     
                 # Apply Calibration
                 if 'active_calibration_meta' in st.session_state:
@@ -163,13 +170,20 @@ with tab_ldr:
                         df_dut['Sensitivity_W_SNR3'] = df_dut.apply(lambda r: r['Optical_Power_W'] * (3.0 / r['SNR_FFT']) if r['SNR_FFT'] > 0 else np.nan, axis=1)
                         
                     # Fit Slope
-                    cal_mgr = CalibrationManager()
-                    slope, intercept, r2 = cal_mgr.fit_responsivity_slope(df_dut)
+                    # Fit Slope for J vs P (Responsivity Density?)
+                    # Model: J = R_dens * P (intercept 0)
+                    # slope = sum(x*y)/sum(x^2)
+                    x_fit_data = df_dut['Optical_Power_W'].values
+                    y_fit_data = df_dut['Current_Density_A_cm2'].abs().values
+                    
+                    slope_dens = np.sum(x_fit_data * y_fit_data) / np.sum(x_fit_data**2)
+                    intercept = 0.0
+                    r2 = 0.0 # simple placeholder or calc if needed
                     
                     # --- REPORT ---
                     k1, k2, k3 = st.columns(3)
-                    k1.metric("Responsivity", f"{slope:.4f} A/W")
-                    k2.metric("Linearity (R²)", f"{r2:.5f}")
+                    k1.metric("Responsivity", f"{slope_dens:.4f} A/W/cm²") # Or just A/W if normalized? No, it's density.
+                    k2.metric("Linearity (Fit)", "Power Law") # We used Power Law for Cal, Linear for DUT
                     if 'Sensitivity_W_SNR3' in df_dut.columns:
                         min_sens = df_dut['Sensitivity_W_SNR3'].min()
                         k3.metric("Best Sensitivity (SNR=3)", f"{min_sens:.2e} W")
@@ -178,16 +192,16 @@ with tab_ldr:
                     c_p1, c_p2 = st.columns(2)
                     
                     with c_p1:
-                        # LDR Plot with Fit
-                        fig_ldr = px.scatter(df_dut, x="Optical_Power_W", y="Photocurrent_A", 
+                        # LDR Plot with Fit (Using J)
+                        fig_ldr = px.scatter(df_dut, x="Optical_Power_W", y="Current_Density_A_cm2", 
                                              log_x=True, log_y=True,
-                                             title="LDR: Photocurrent vs Optical Power")
+                                             title=f"LDR: Current Density vs Optical Power (Area={dev_area} cm²)")
                         # Use logspace for smooth line on log-log plot
                         x_min = df_dut['Optical_Power_W'].min()
                         x_max = df_dut['Optical_Power_W'].max()
                         if x_min <= 0: x_min = 1e-12 
                         x_range = np.geomspace(x_min, x_max, 100)
-                        y_fit = slope * x_range + intercept
+                        y_fit = slope_dens * x_range # + intercept (0)
                         fig_ldr.add_trace(go.Scatter(x=x_range, y=y_fit, mode='lines', name='Linear Fit', line=dict(dash='dash', color='red')))
                         st.plotly_chart(fig_ldr, use_container_width=True)
                         
@@ -211,8 +225,8 @@ with tab_ldr:
                     }, na_rep="-"))
                     
                 else:
-                    st.warning("No calibration active. Plotting raw Current.")
-                    fig = px.scatter(df_dut, x="LED_Current_A", y="Photocurrent_A", log_x=True, log_y=True)
+                    st.warning("No calibration active. Plotting raw Current Density.")
+                    fig = px.scatter(df_dut, x="LED_Current_A", y="Current_Density_A_cm2", log_x=True, log_y=True)
                     st.plotly_chart(fig)
 
             except Exception as e:
@@ -233,7 +247,7 @@ with tab_trace:
     
     c_t1, c_t2 = st.columns(2)
     with c_t1:
-        load_res = st.number_input("Load Resistance Used (Ω)", value=47000.0, help="Required to convert Voltage Noise to Current Noise.")
+        load_res = st.number_input("Gain (Resistor) Used (Ω)", value=47000.0, help="Required to convert Voltage Noise to Current Noise.")
     with c_t2:
         # Window
         fs_override = st.number_input("Sampling Rate Override (Hz)", value=0.0, help="Leave as 0.0 to Auto-Detect from time data.")

@@ -42,6 +42,16 @@ if smu.state == InstrumentState.ERROR:
 
 render_status_banner(smu)
 
+# --- TIA SAFETY INTERLOCK ---
+if st.session_state.get('global_amp_type') == 'FEMTO TIA':
+    st.warning("⚠️ **FEMTO TIA AMPLIFIER SELECTED**")
+    st.info("High Gain TIA connected. Improper source settings (High Current/Voltage) can DESTROY the TIA input stage.")
+    tia_confirmed = st.checkbox("✅ I confirm that Source Limits are safe for the selected TIA Gain.", key='tia_confirm_pulse')
+    
+    if not tia_confirmed:
+        st.error("🛑 Operations Locked. Please confirm TIA safety above.")
+        st.stop()
+
 import plotly.graph_objects as go
 import numpy as np
 

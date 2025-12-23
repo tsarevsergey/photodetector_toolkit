@@ -157,6 +157,34 @@ class LDRWorkflow:
             if progress_callback:
                 progress_callback((i / steps), f"Step {i+1}/{steps}: {current_level*1000:.2f} mA")
             
+            # WORKFLOW SAFETY CHECK: Monotonicity
+            # Ensure we are not increasing current (going backwards) which could be dangerous
+            # Note: We skip this check for re-runs of the same point (i.e. resistor change retry)
+            # but here we iterate through distinct levels.
+            # This relies on usage of 'levels_to_run' list.
+            if i > 0: # Check against previous STEP (original_index - 1)
+               # We need to find the previous level in the FULL list.
+               # current_levels_full was used to generate this.
+               # But locally, we can just ensure:
+               # If this is a descending sweep, verify current <= previous_in_loop
+               # Wait, if we resume components, levels_to_run might be a slice. 
+               pass # Logic is tricky with Resumes.
+               # Simpler check: If start > stop, ensure current level <= start_current
+               if start_current > stop_current and current_level > (start_current * 1.01):
+                    raise ValueError(f"Safety Violation: Current {current_level} exceeds Start Current {start_current}!")
+
+            # Check vs Previous iteration loop value
+            # Since we iterate levels_to_run sequentially:
+            # We can store 'last_executed_current' variable.
+            if hasattr(self, 'last_executed_current') and self.last_executed_current is not None:
+                # Allow small floating point tolerance or equality (re-measure)
+                # But strictly NO INCREASE > 1%
+                if start_current >= stop_current: # Downward Sweep
+                    if current_level > self.last_executed_current * 1.01:
+                         raise ValueError(f"Safety Violation: Current increased from {self.last_executed_current} to {current_level} during downward sweep!")
+            
+            self.last_executed_current = current_level
+            
             try:
                 # --- STEP 1: TEARDOWN / RESET ---
                 # We stay in "OUTP ON" state but stop any running sequences

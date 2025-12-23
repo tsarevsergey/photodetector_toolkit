@@ -26,6 +26,27 @@ class SMUController(BaseInstrumentController):
         self._current_source_amps = 0.0
         self._voltage_limit_volts = 2.0  # Safe default
         self._output_enabled = False
+        
+        # Software Safety Limit (None = Disabled)
+        self.software_current_limit = None 
+
+    def set_software_current_limit(self, limit: float = None):
+        """
+        Sets a software-level high-water mark for Current Source.
+        Any attempt to set a current higher than this (abs) will raise ValueError.
+        Set to None to disable.
+        """
+        self.software_current_limit = abs(limit) if limit is not None else None
+        if self.software_current_limit is not None:
+             self.logger.info(f"SAFETY: Software Current Limit set to {self.software_current_limit:.2e} A")
+        else:
+             self.logger.info("SAFETY: Software Current Limit DISABLED")
+
+    def _check_current_limit(self, amps: float):
+        """Internal helper to verify current against software limit."""
+        if self.software_current_limit is not None:
+            if abs(amps) > self.software_current_limit * 1.001: # 0.1% tolerance
+                raise ValueError(f"SAFETY INTERLOCK: Requested {amps:.2e} A exceeds Software Limit {self.software_current_limit:.2e} A")
 
     def connect(self) -> None:
         """Connects to the instrument via PyVISA or mocks the connection."""
@@ -178,11 +199,13 @@ class SMUController(BaseInstrumentController):
         self.require_state([InstrumentState.IDLE, InstrumentState.CONFIGURED, InstrumentState.ARMED, InstrumentState.RUNNING, InstrumentState.ERROR])
         
         if self.mock:
+            self._check_current_limit(amps)
             self.logger.info(f"MOCK: Set Current {amps} A")
             self._current_source_amps = amps
             return
 
         try:
+            self._check_current_limit(amps)
             self.resource.write(f"SOUR:FUNC:MODE CURR") 
             self.resource.write(f"SOUR:CURR {amps}")
             self._current_source_amps = amps
@@ -301,6 +324,10 @@ class SMUController(BaseInstrumentController):
         if len(points) == 0:
             raise ValueError("List points cannot be empty")
             
+        if source_mode == 'CURR':
+            for p in points:
+                self._check_current_limit(p)
+            
         # Convert list to string
         points_str = ",".join([f"{x:.6e}" for x in points])
         
@@ -359,6 +386,10 @@ class SMUController(BaseInstrumentController):
         """
         if not (0 < duty_cycle < 1):
              raise ValueError("Duty cycle must be between 0 and 1")
+             
+        if mode == 'CURR':
+            self._check_current_limit(high_level)
+            self._check_current_limit(low_level)
              
         # Calculate time steps
         t_high = period * duty_cycle
