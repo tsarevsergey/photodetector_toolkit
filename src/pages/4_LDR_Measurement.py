@@ -33,11 +33,24 @@ if 'pref_initialized' not in st.session_state:
     st.session_state.cal_led_wavelength = settings.get("last_led_wavelength")
     
     # Initialize defaults for others if needed
-    if 'sweep_freq' not in st.session_state: st.session_state.sweep_freq = 40.0
+    if 'sweep_freq' not in st.session_state: st.session_state.sweep_freq = settings.get("sweep_freq")
     if 'sweep_duty' not in st.session_state: st.session_state.sweep_duty = 0.5
-    if 'pref_scope_range_idx' not in st.session_state: st.session_state.pref_scope_range_idx = 4
+    if 'pref_scope_range_idx' not in st.session_state: st.session_state.pref_scope_range_idx = settings.get("scope_range_idx")
+    if 'pref_acq_mode' not in st.session_state: st.session_state.pref_acq_mode = settings.get("acquisition_mode")
+    if 'pref_duration' not in st.session_state: st.session_state.pref_duration = settings.get("capture_duration")
+    if 'pref_sample_rate' not in st.session_state: st.session_state.pref_sample_rate = settings.get("sample_rate")
     
     st.session_state.pref_initialized = True
+
+# Helper to save settings
+def save_setting(key, value):
+    settings.set(key, value) # Autosaves
+
+def update_freq(): save_setting("sweep_freq", st.session_state.sweep_freq)
+def update_mode(): save_setting("acquisition_mode", st.session_state.pref_acq_mode)
+def update_duration(): save_setting("capture_duration", st.session_state.pref_duration)
+def update_rate(): save_setting("sample_rate", st.session_state.pref_sample_rate)
+
 
 st.set_page_config(page_title="LDR Measurement", layout="wide")
 st.title("📈 LDR Measurement (Linear Dynamic Range)")
@@ -103,6 +116,22 @@ with tab_settings:
     st.number_input("Min Cycles per Step", value=st.session_state.pref_min_cycles, min_value=10, max_value=10000, key='pref_min_cycles', help="Minimum number of cycles/pulses to generate for each step.")
     
     st.divider()
+    st.subheader("Acquisition Settings")
+    
+    # Init Session State
+    if 'pref_acq_mode' not in st.session_state: st.session_state.pref_acq_mode = "Block"
+    if 'pref_duration' not in st.session_state: st.session_state.pref_duration = 0.5
+    if 'pref_sample_rate' not in st.session_state: st.session_state.pref_sample_rate = 100000.0
+
+    st.radio("Mode", ["Block", "Streaming"], horizontal=True, key='pref_acq_mode', on_change=update_mode, help="Block: Fast, max ~0.5s. Streaming: Slower, allows long duration (10s+) for low freq noise.")
+    
+    c_acq1, c_acq2 = st.columns(2)
+    with c_acq1:
+        st.number_input("Capture Duration (s)", value=st.session_state.pref_duration, min_value=0.1, max_value=60.0, step=0.1, key='pref_duration', on_change=update_duration)
+    with c_acq2:
+         st.number_input("Sample Rate (Hz)", value=st.session_state.pref_sample_rate, min_value=1000.0, max_value=1000000.0, step=1000.0, key='pref_sample_rate', on_change=update_rate, help="Only used in Streaming mode. Block mode auto-calculates.")
+
+    st.divider()
     st.subheader("Light Source Calibration")
     
     if 'cal_led_wavelength' not in st.session_state: st.session_state.cal_led_wavelength = 461.0
@@ -158,7 +187,7 @@ with tab_measure:
         st.divider()
         
         # Pulse settings
-        freq = st.number_input("Frequency (Hz)", value=st.session_state.sweep_freq, key='sweep_freq')
+        freq = st.number_input("Frequency (Hz)", value=st.session_state.sweep_freq, key='sweep_freq', on_change=update_freq)
         duty = st.slider("Duty Cycle", 0.1, 0.9, value=st.session_state.sweep_duty, key='sweep_duty')
         
         # Measurement Timing
@@ -270,7 +299,10 @@ if 'paused_state' in st.session_state:
                 start_step_index=start_idx,
                 previous_results=state['results'],
                 previous_waveforms=state['waveforms'],
-                autosave_path=st.session_state.get('last_autosave_path', None)
+                autosave_path=st.session_state.get('last_autosave_path', None),
+                acquisition_mode=st.session_state.pref_acq_mode,
+                sample_rate=st.session_state.pref_sample_rate,
+                capture_duration_sec=st.session_state.pref_duration
             )
              
              # Success
@@ -446,7 +478,10 @@ if start_btn and 'paused_state' not in st.session_state:
             min_pulse_cycles=st.session_state.pref_min_cycles,
             start_delay_cycles=delay_cycles,
             progress_callback=update_ui,
-            autosave_path=autosave_path_val
+            autosave_path=autosave_path_val,
+            acquisition_mode=st.session_state.pref_acq_mode,
+            sample_rate=st.session_state.pref_sample_rate,
+            capture_duration_sec=st.session_state.pref_duration
         )
         
         status_text.success("Sweep Complete!")

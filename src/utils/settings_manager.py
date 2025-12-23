@@ -17,7 +17,12 @@ DEFAULT_SETTINGS = {
     "sweep_start": 10e-3,
     "sweep_stop": 10e-6,
     "sweep_steps": 10,
-    "capture_delay_cycles": 0
+    "capture_delay_cycles": 0,
+    "sweep_freq": 40.0,
+    "acquisition_mode": "Block",
+    "capture_duration": 0.5,
+    "sample_rate": 100000.0,
+    "scope_range_idx": 4
 }
 
 class SettingsManager:

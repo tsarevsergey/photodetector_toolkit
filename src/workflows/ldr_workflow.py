@@ -45,7 +45,12 @@ class LDRWorkflow:
                   start_step_index: int = 0,
                   previous_results: list = None,
                   previous_waveforms: list = None,
-                  autosave_path: str = None) -> tuple[pd.DataFrame, list[dict]]:
+                  autosave_path: str = None,
+                  # New Params
+                  acquisition_mode: str = "Block", # "Block" or "Streaming"
+                  sample_rate: float = 100000.0,
+                  capture_duration_sec: float = 2.0
+                  ) -> tuple[pd.DataFrame, list[dict]]:
         """
         Executes the LDR sweep.
         """
@@ -67,11 +72,34 @@ class LDRWorkflow:
         
         # Scope settings
         period = 1.0 / frequency
-        # Capture enough for ~20 periods to ensure good spectral resolution (PSD)
-        capture_duration = max(20 * period, 0.05) 
         
-        num_samples = 16000 # More samples for better FFT bin resolution
-        tb_index = self.scope.calculate_timebase_index(capture_duration, num_samples)
+        # Mode Switching
+        is_streaming = (acquisition_mode == "Streaming")
+        
+        if is_streaming:
+            # Streaming Setup
+            # We respect capture_duration_sec
+            capture_duration = capture_duration_sec
+            num_samples = int(capture_duration * sample_rate)
+            # tb_index not strictly needed for streaming, BU used in range-check capture_block calls
+            # Calculate a default for short checks (e.g. 0.1s)
+            tb_index = self.scope.calculate_timebase_index(0.1, 2000)
+            self.logger.info(f"Mode: Streaming. Duration: {capture_duration}s, Rate: {sample_rate}Hz")
+        else:
+            # Block Setup (Legacy)
+            # Capture enough for ~20 periods to ensure good spectral resolution (PSD)
+            # But we respect capture_duration_sec if provided? 
+            # Original logic: capture_duration = max(20 * period, 0.05)
+            # Let's use user duration if provided, else default logic
+            
+            if capture_duration_sec > 0.1: # User override
+                capture_duration = capture_duration_sec
+            else:
+                capture_duration = max(20 * period, 0.05) 
+            
+            num_samples = 16000 # Fixed for block
+            tb_index = self.scope.calculate_timebase_index(capture_duration, num_samples)
+            self.logger.info(f"Mode: Block. Duration: {capture_duration}s, Samples: {num_samples}")
         
         # 1. Start with Output OFF to ensure clean state
         try:
@@ -100,11 +128,22 @@ class LDRWorkflow:
             '200MV': 0.2, '500MV': 0.5, '1V': 1.0, '2V': 2.0, '5V': 5.0, '10V': 10.0
         }
         
-        # Determine initial index from user setting
-        try:
-            curr_range_idx = range_list.index(scope_range.upper())
-        except:
-            curr_range_idx = 9 # Default 10V
+        # Determine initial index
+        # If Resuming (start_step_index > 0) AND we have a memory of last range, use it.
+        # Otherwise use user setting.
+        
+        start_idx_candidate = None
+        if start_step_index > 0 and self.last_range_idx is not None:
+             start_idx_candidate = self.last_range_idx
+             self.logger.info(f"Resuming sweep: Using last known range index {start_idx_candidate} ({range_list[start_idx_candidate]})")
+        
+        if start_idx_candidate is not None:
+            curr_range_idx = start_idx_candidate
+        else:
+            try:
+                curr_range_idx = range_list.index(scope_range.upper())
+            except:
+                curr_range_idx = 9 # Default 10V
             
         self.logger.info(f"Starting LDR Sweep: {steps} steps (Running {len(levels_to_run)}), {start_current:.2e}A -> {stop_current:.2e}A, Freq={frequency}Hz, Start Range={range_list[curr_range_idx]}")
         print(f"DEBUG: autosave_path received = '{autosave_path}'")
@@ -146,19 +185,40 @@ class LDRWorkflow:
                     
                     # Pulse Logic
                     
-                    total_capture_time = (capture_duration + 0.2) * averages
-                    # Add delay time to required cycles
-                    delay_time = start_delay_cycles * period
-                    req_cycles = int((total_capture_time + delay_time) / period) + 10
+                    # If streaming, we might need continuous pulses for a LONG time.
+                    # Cycles = Duration / Period
+                    # For 10s at 80Hz = 800 cycles.
+                    # Ensure pulse train covers the capture duration
+                    
+                    # Capture Time
+                    # Streaming: duration exactly. Block: duration + overhead.
+                    
+                    # Capture Time
+                    # Must cover all averages + overheads
+                    # Streaming takes exact duration, but Block mode overhead is higher.
+                    # We add a generous 2.0s buffer + 10% to be safe.
+                    
+                    req_time = (capture_duration + 0.2) * averages + 2.0 
+                    req_cycles = int(req_time / period) + 20
+                    
                     if req_cycles < 10: req_cycles = 10
-                    # Enforce user minimum
                     if req_cycles < min_pulse_cycles: req_cycles = min_pulse_cycles
                     
                     self.smu.generate_square_wave(current_level, 0.0, period, duty_cycle, req_cycles, "CURR")
                     
-                    # Configure Scope
-                    coupling_str = "AC" if ac_coupling else "DC"
-                    self.scope.configure_channel('A', True, current_range_str, coupling_str)
+                    # Configure Scope (with retry for State Errors)
+                    try:
+                        coupling_str = "AC" if ac_coupling else "DC"
+                        self.scope.configure_channel('A', True, current_range_str, coupling_str)
+                    except RuntimeError as e:
+                        if "InstrumentState" in str(e) or "state" in str(e):
+                             self.logger.warning(f"Scope state error detected: {e}. Attempting reset...")
+                             self.scope.reset_device()
+                             time.sleep(0.5)
+                             # Retry config
+                             self.scope.configure_channel('A', True, current_range_str, coupling_str)
+                        else:
+                            raise e
                     
                     # --- STEP 3: ENABLE & RUN ---
                     self.smu.enable_output()
@@ -168,6 +228,7 @@ class LDRWorkflow:
                     if start_delay_cycles > 0:
                         # Sleep for N cycles before starting capture
                         # SMU is already running in background
+                        delay_time = start_delay_cycles * period
                         time.sleep(delay_time)
                     self.smu.trigger_list()
                     
@@ -269,14 +330,31 @@ class LDRWorkflow:
                     for avg_idx in range(averages):
                          if self.stop_requested: break
                          
-                         # Capture blocks
-                         times, volts = self.scope.capture_block(tb_index, num_samples)
+                         # Capture
+                         if acquisition_mode == "Streaming":
+                             times, volts = self.scope.capture_streaming(capture_duration_sec, sample_rate)
+                         else:
+                             times, volts = self.scope.capture_block(tb_index, num_samples)
                          
                          if len(volts) > 0:
+
+
+                         
                              # analyze Pulse (Time Domain) - used for averaging Vpp
                              v_high, v_low, vpp, s_time = self.analyze_pulse_snr(volts)
                              vpps.append(vpp)
                              snrs_time.append(s_time)
+                             
+                             if len(times) > 1:
+                                 fs = 1.0 / (times[1] - times[0])
+                                 
+                                 # Calculate Robust Metrics
+                                 l_amp = signal_processing.calculate_lockin_amplitude(volts, fs, frequency)
+                                 lockin_amps.append(l_amp)
+                                 
+                                 n_dens = signal_processing.calculate_noise_density_sideband(volts, fs, frequency)
+                                 noise_densities.append(n_dens)
+
                              
                              # analyze Pulse (Frequency Domain)
                              # IMPORTANT: We only calculate Noise/SNR from the FIRST block (or result averaging)
@@ -390,24 +468,28 @@ class LDRWorkflow:
                     "SNR_FFT": avg_snr_fft,
                     "Photocurrent_A": photocurrent,
                     "Resistance_Ohms": resistor_ohms,
-                    "SNR_Status": "OK" if calc_snr_1hz > min_snr_threshold else "LOW",
+                    "SNR_Status": "OK" if avg_snr_time > min_snr_threshold else "LOW",
                     "LockIn_Amp_V": avg_lockin_amp,
                     "Noise_Density_V_rtHz": avg_noise_dens,
-                    "SNR_Broadband": calc_snr_1hz # Renaming for clarity?
+                    "SNR_Broadband": calc_snr_1hz 
                 })
                 
-                print(f"[{i+1}/{steps}] I={current_level:.2e}A -> Sig={avg_lockin_amp*1000:.1f}mV, Noise={avg_noise_dens*1e6:.1f}uV/rtHz")
+                print(f"[{i+1}/{steps}] I={current_level:.2e}A | Vpp={avg_vpp:.4f}V | SNR_Time={avg_snr_time:.1f} (Thresh {min_snr_threshold}) | Robust_SNR={calc_snr_1hz:.1f}")
                 
-                # Check SNR Trigger (Using LockIn SNR)
-                if calc_snr_1hz < min_snr_threshold:
-                    self.logger.warning(f"SNR ({calc_snr_1hz:.1f}) below threshold ({min_snr_threshold})")
+                # Save state for persistence
+                self.last_range_idx = curr_range_idx
+                
+                # Check SNR Trigger (Using Time Domain SNR as requested)
+                # If signal is noisy in time domain, we likely need a larger resistor to get more voltage.
+                if avg_snr_time < min_snr_threshold:
+                    self.logger.warning(f"SNR_Time ({avg_snr_time:.1f}) below threshold ({min_snr_threshold})")
                     # Safely disable SMU output before raising pause exception
                     try:
                         self.smu.set_current(0.0)
                         self.smu.disable_output()
                     except:
                         pass
-                    raise ResistorChangeRequiredException(i, calc_snr_1hz, current_level, results, waveforms)
+                    raise ResistorChangeRequiredException(i, avg_snr_time, current_level, results, waveforms)
 
             except ResistorChangeRequiredException:
                 raise # Re-raise immediately to bubbling up

@@ -182,7 +182,11 @@ with tab_ldr:
                         fig_ldr = px.scatter(df_dut, x="Optical_Power_W", y="Photocurrent_A", 
                                              log_x=True, log_y=True,
                                              title="LDR: Photocurrent vs Optical Power")
-                        x_range = np.linspace(df_dut['Optical_Power_W'].min(), df_dut['Optical_Power_W'].max(), 100)
+                        # Use logspace for smooth line on log-log plot
+                        x_min = df_dut['Optical_Power_W'].min()
+                        x_max = df_dut['Optical_Power_W'].max()
+                        if x_min <= 0: x_min = 1e-12 
+                        x_range = np.geomspace(x_min, x_max, 100)
                         y_fit = slope * x_range + intercept
                         fig_ldr.add_trace(go.Scatter(x=x_range, y=y_fit, mode='lines', name='Linear Fit', line=dict(dash='dash', color='red')))
                         st.plotly_chart(fig_ldr, use_container_width=True)

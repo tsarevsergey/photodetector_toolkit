@@ -134,3 +134,181 @@ def calculate_snr_fft(
     
     snr = signal_power / avg_noise_power
     return float(snr)
+
+def calculate_lockin_amplitude(voltage: np.ndarray, fs: float, target_freq: float) -> float:
+    """
+    Calculates signal amplitude using digital lock-in (IQ demodulation).
+    Robust against noise and slight frequency drift.
+    Returns RMS voltage of the signal component.
+    """
+    n = len(voltage)
+    t = np.arange(n) / fs
+    
+    # Reference signals (I and Q)
+    ref_i = np.sin(2 * np.pi * target_freq * t)
+    ref_q = np.cos(2 * np.pi * target_freq * t)
+    
+    # Demodulate
+    sig_i = voltage * ref_i
+    sig_q = voltage * ref_q
+    
+    # Low-pass filter (Mean over integer periods)
+    # Ideally simpler: Just mean works if N is large and non-coherent errors avg out
+    mean_i = np.mean(sig_i)
+    mean_q = np.mean(sig_q)
+    
+    # Magnitude
+    # V_peak = 2 * sqrt(I^2 + Q^2) 
+    # (Factor of 2 comes from sin^2 average = 0.5)
+    v_peak = 2 * np.sqrt(mean_i**2 + mean_q**2)
+    
+    # Return RMS
+    return v_peak / np.sqrt(2)
+
+def calculate_noise_density_sideband(voltage: np.ndarray, fs: float, target_freq: float) -> float:
+    """
+    Estimates noise density (V/rtHz) by looking at sidebands around target freq.
+    """
+    # Use Full Length for resolution
+    f, pxx = signal.welch(voltage, fs, nperseg=len(voltage), window='hann')
+    
+    # Define sideband regions (e.g. +/- 10% to 20% away)
+    # Avoid the peak itself
+    idx_target = np.argmin(np.abs(f - target_freq))
+    
+    # Window of exclusion (e.g. +/- 5Hz or 5 bins)
+    bin_width = f[1] - f[0]
+    exclusion_width = max(5.0, target_freq * 0.05)
+    exclusion_bins = int(exclusion_width / max(bin_width, 1e-6))
+    
+    # Region of interest: target +/- 5*exclusion
+    roi_width_bins = max(exclusion_bins * 5, 10)
+    
+    start_bin = max(0, idx_target - roi_width_bins)
+    end_bin = min(len(f), idx_target + roi_width_bins)
+    
+    # Mask out the signal peak
+    mask = np.ones(end_bin - start_bin, dtype=bool)
+    # Center relative
+    center = idx_target - start_bin
+    
+    m_start = max(0, center - exclusion_bins)
+    m_end = min(len(mask), center + exclusion_bins + 1)
+    mask[m_start : m_end] = False
+    
+    roi_pxx = pxx[start_bin:end_bin][mask]
+    
+    if len(roi_pxx) == 0:
+        return 1e-9 # Fallback
+        
+    avg_noise_power_density = np.median(roi_pxx) # V^2/Hz
+    return np.sqrt(avg_noise_power_density)
+
+def calculate_robust_snr(voltage: np.ndarray, fs: float, target_freq: float) -> float:
+    """
+    Calculates SNR using Lock-In Amplitude / Sideband Noise.
+    SNR = (Signal_RMS**2) / (Noise_Density**2 * BinWidth)
+    """
+    if len(voltage) < 10: return 0.0
+    
+    # 1. Signal RMS
+    v_rms = calculate_lockin_amplitude(voltage, fs, target_freq)
+    
+    # 2. Noise Density
+    v_n_density = calculate_noise_density_sideband(voltage, fs, target_freq)
+    
+    # 3. Bin Width (Effective Noise Bandwidth of reference "Bin")
+    # For consistency with FFT-based SNR (Peak/Floor), we normalize to bin width.
+    # Bin Width = fs / N
+    bin_width = fs / len(voltage)
+    
+    if v_n_density < 1e-12: return 1000.0 # High SNR Cap
+    
+    # Power Ratio
+    signal_power = v_rms**2
+    noise_power_in_bin = v_n_density**2 * bin_width
+    
+    return signal_power / noise_power_in_bin
+
+def extract_valid_pulse_train(
+    times: np.ndarray, 
+    volts: np.ndarray, 
+    frequency: float,
+    min_duration_cycles: float = 3.0
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Analyzes the waveform to find the longest continuous segment of valid pulses.
+    Useful for cleaning up streaming captures where the SMU might have paused or glitched.
+    
+    Args:
+        times: Time array
+        volts: Voltage array
+        frequency: Expected pulse frequency
+        min_duration_cycles: Minimum length to consider valid
+        
+    Returns:
+        (valid_times, valid_volts) - Slice of the original arrays. 
+        Returns ([], []) if no valid segment found.
+    """
+    if len(volts) < 2: return np.array([]), np.array([])
+    
+    fs = 1.0 / (times[1] - times[0])
+    period_samples = int(fs / frequency)
+    if period_samples < 2: period_samples = 2
+    
+    # 1. Calculate Activity Envelope (Rolling Std Dev)
+    # Use simple uniform filter approximation for speed
+    # envelope ~ std dev over 1 period
+    
+    # Remove DC offset first
+    v_ac = volts - np.mean(volts)
+    
+    # Rolling variance ~ correlate v^2 with boxcar? 
+    # Or just use scipy.ndimage.uniform_filter1d
+    from scipy.ndimage import uniform_filter1d
+    
+    # Rectified envelope is easier/faster than std
+    # Low pass filter the rectified signal
+    rectified = np.abs(v_ac)
+    envelope = uniform_filter1d(rectified, size=period_samples * 2)
+    
+    # 2. Threshold
+    # Active region should have envelope > 15% of median envelope (or max?)
+    # If the signal dropped to 0, envelope goes to close to 0 (noise floor).
+    # Use robust max (95th percentile) to set scale
+    max_env = np.percentile(envelope, 95)
+    threshold = 0.15 * max_env
+    
+    # If threshold is too close to noise floor? 
+    # Check noise floor (5th percentile)
+    noise_floor = np.percentile(envelope, 5)
+    if threshold < 2 * noise_floor:
+        threshold = 2 * noise_floor # Ensure we are above noise
+        
+    mask = envelope > threshold
+    
+    # 3. Find Longest Continuous Region
+    # Identify changes
+    # pad with False to find edges
+    padded = np.concatenate(([False], mask, [False]))
+    diff = np.diff(padded.astype(int))
+    starts = np.where(diff == 1)[0]
+    ends = np.where(diff == -1)[0]
+    
+    if len(starts) == 0:
+        return np.array([]), np.array([])
+        
+    durations = ends - starts
+    best_idx = np.argmax(durations)
+    
+    s = starts[best_idx]
+    e = ends[best_idx]
+    
+    # Check minimum duration
+    cycles_found = (e - s) / period_samples
+    if cycles_found < min_duration_cycles:
+        return np.array([]), np.array([])
+        
+    # 4. Return Slice
+    return times[s:e], volts[s:e]
+

@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Tuple
 import numpy as np
 import time
 
@@ -80,6 +80,11 @@ class ScopeController(BaseInstrumentController):
             # If it failed, ensure we strip state
             self.chandle = None
             self.handle_error(f"Failed to open scope: {e}")
+
+    def reset_connection(self):
+        """Closes and re-opens connection."""
+        self.disconnect()
+        self.connect()
 
     def configure_channel(self, channel_name: str, enabled: bool, range_str: str = "2V", coupling: str = "DC"):
         """
@@ -303,3 +308,214 @@ class ScopeController(BaseInstrumentController):
                 ps.ps2000aCloseUnit(h)
             except:
                 pass
+
+    def capture_streaming(self, duration_s: float, sample_rate: float) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Captures data in Streaming Mode.
+        Args:
+            duration_s: Total time to record.
+            sample_rate: Desired samples per second.
+        Returns:
+            times, volts
+        """
+        self.require_state([InstrumentState.IDLE, InstrumentState.CONFIGURED])
+        
+        needed_samples = int(duration_s * sample_rate)
+        
+        if self.mock:
+            self.logger.info(f"MOCK: Capture Streaming {duration_s}s @ {sample_rate}Hz")
+            time.sleep(min(duration_s, 2.0)) # Don't sleep full time in mock if long
+            t = np.linspace(0, duration_s, needed_samples)
+            v = 0.5 * np.sin(2 * np.pi * 80 * t) + np.random.normal(0, 0.01, needed_samples)
+            return t, v
+
+        try:
+            self.to_state(InstrumentState.RUNNING)
+            # 0. Stop keys
+            ps.ps2000aStop(self.chandle)
+            
+            # 1. Setup Buffers for Overview (Driver requires these even if we copy out)
+            # We use a small buffer for the driver ring buffer
+            overview_buffer_size = 10000 
+            bufferAMax = (ctypes.c_int16 * overview_buffer_size)()
+            bufferAMin = (ctypes.c_int16 * overview_buffer_size)()
+            
+            self.status["setDataBuffersA"] = ps.ps2000aSetDataBuffers(
+                self.chandle,
+                0, # ChA
+                ctypes.byref(bufferAMax),
+                ctypes.byref(bufferAMin),
+                overview_buffer_size,
+                0, # Seg index
+                0 # Ratio mode none
+            )
+            assert_pico_ok(self.status["setDataBuffersA"])
+            
+            # 2. Configure Streaming
+            # Sample Interval
+            # PS2000A_US = 2, PS2000A_NS = 1.
+            # We want sample_rate (Hz). interval = 1e9 / sample_rate (ns).
+            # But specific drivers have limits.
+            # Let's use US (microseconds) for stability if rate < 1MS/s
+            
+            if sample_rate > 1_000_000:
+                # Use NS
+                sample_interval = int(1e9 / sample_rate)
+                time_units = ps.PS2000A_TIME_UNITS['PS2000A_NS']
+            else:
+                # Use US
+                sample_interval = int(1e6 / sample_rate)
+                time_units = ps.PS2000A_TIME_UNITS['PS2000A_US']
+                
+            if sample_interval < 1: sample_interval = 1
+            
+            sampleInterval = ctypes.c_int32(sample_interval)
+            
+            # We need a big application buffer to copy data into
+            app_buffer = np.zeros(needed_samples, dtype=np.int16)
+            samples_collected = 0
+            
+            # 3. Define Callback (Closure style to capture locals? No, ctypes callbacks need to be global or standard)
+            # Actually, we can use a class method if wrapped, but usually a simple function is safer.
+            # We will use the polling loop approach with GetStreamingLatestValues which is easier in Python than C-callbacks.
+            # Wait, ps2000aGetStreamingLatestValues REQUIRES a callback.
+            
+            # We define callback here
+            def streaming_callback(handle, noOfSamples, startIndex, overflow, triggerAt, triggered, autoStop, param):
+                nonlocal samples_collected
+                if noOfSamples > 0:
+                     # Copy data
+                     # Where is it coming from? It comes from the buffers passed to SetDataBuffers.
+                     # The driver fills 'bufferAMax' circularly.
+                     # startIndex tells us where in bufferAMax the new data is.
+                     
+                     # Indices in circular buffer
+                     src_start = startIndex
+                     src_end = startIndex + noOfSamples
+                     
+                     # Indices in target app_buffer
+                     dest_start = samples_collected
+                     dest_end = samples_collected + noOfSamples
+                     
+                     # Safety check bounds
+                     if dest_end > needed_samples:
+                         noOfSamples = needed_samples - samples_collected
+                         dest_end = needed_samples
+                         src_end = startIndex + noOfSamples
+                     
+                     if noOfSamples > 0:
+                         # Handle wrap around of driver buffer? 
+                         # The SDK usually assures linear blocks in callback? 
+                         # "The driver copies the data... to the overview buffers..."
+                         # If bufferAMax size is sufficient for each callback chunk, we are good.
+                         # We set overview 10000, usually valid.
+                         
+                         # Copy
+                         # We need to access the c-array as numpy or list
+                         # bufferAMax is c_int16_Array.
+                         # Slicing c_array works
+                         chunk = bufferAMax[src_start:src_end]
+                         app_buffer[dest_start:dest_end] = chunk
+                         
+                         samples_collected += noOfSamples
+                         
+            # Convert to CType
+            c_callback = ps.StreamingReadyType(streaming_callback)
+            
+            # 4. Start Streaming
+            maxPreTrigger = 0
+            autoStop = 1 # We manage stop manually or via count? 
+            # If we set autoStop=1 and pass needed_samples as maxPostTrigger, driver stops automatically.
+            
+            self.status["runStreaming"] = ps.ps2000aRunStreaming(
+                self.chandle,
+                ctypes.byref(sampleInterval),
+                time_units,
+                maxPreTrigger, 
+                needed_samples, # maxPostTrigger
+                1, # autoStop
+                1, # downSampleRatio
+                ps.PS2000A_RATIO_MODE['PS2000A_RATIO_MODE_NONE'],
+                overview_buffer_size
+            )
+            assert_pico_ok(self.status["runStreaming"])
+            
+            actual_sample_interval = sampleInterval.value
+            actual_rate = (1e9 if time_units == ps.PS2000A_TIME_UNITS['PS2000A_NS'] else 1e6) / actual_sample_interval
+            self.logger.info(f"Streaming started: {needed_samples} samples @ ~{actual_rate:.1f}Hz")
+            
+            # 5. Collection Loop
+            start_time = time.time()
+            while samples_collected < needed_samples:
+                # Poll
+                ps.ps2000aGetStreamingLatestValues(self.chandle, c_callback, None)
+                
+                if time.time() - start_time > (duration_s + 5.0):
+                    raise TimeoutError("Streaming capture timed out.")
+                
+                time.sleep(0.01)
+                
+            # 6. Stop
+            self.status["stop"] = ps.ps2000aStop(self.chandle)
+            self.to_state(InstrumentState.IDLE)
+            
+            # 7. Convert
+            # Use stored range
+            current_range = self.current_range_enum if hasattr(self, 'current_range_enum') else ps.PS2000A_RANGE['PS2000A_10V']
+            
+            # Helper: We have int16 array. Need MaxADC.
+            maxADC = ctypes.c_int16()
+            ps.ps2000aMaximumValue(self.chandle, ctypes.byref(maxADC))
+            
+            # Convert to Volts
+            # adc2mV expects c_array, but we have numpy int16.
+            # Optimised conversion:
+            # V = (raw / maxADC) * range_mv
+            # Ranges are enumerations, need to map numeric value.
+            
+            # Reverse map enum to mV
+            # 10V=10000mV. 
+            # We need a robust map.
+            range_mv_map = {
+                ps.PS2000A_RANGE['PS2000A_10MV']: 10,
+                ps.PS2000A_RANGE['PS2000A_20MV']: 20,
+                ps.PS2000A_RANGE['PS2000A_50MV']: 50,
+                ps.PS2000A_RANGE['PS2000A_100MV']: 100,
+                ps.PS2000A_RANGE['PS2000A_200MV']: 200,
+                ps.PS2000A_RANGE['PS2000A_500MV']: 500,
+                ps.PS2000A_RANGE['PS2000A_1V']: 1000,
+                ps.PS2000A_RANGE['PS2000A_2V']: 2000,
+                ps.PS2000A_RANGE['PS2000A_5V']: 5000,
+                ps.PS2000A_RANGE['PS2000A_10V']: 10000,
+                ps.PS2000A_RANGE['PS2000A_20V']: 20000,
+            }
+            v_range_mv = range_mv_map.get(current_range, 10000)
+            
+            # Numpy calc (faster than iterating adc2mV)
+            volts = (app_buffer.astype(np.float32) / maxADC.value) * (v_range_mv / 1000.0)
+            
+            # Time axis
+            # Total duration = actual_sample_interval * samples?
+            # actual_sample_interval is in units (e.g. us).
+            dt = 1.0 / actual_rate
+            times = np.linspace(0, dt * samples_collected, samples_collected)
+            
+            return times, volts
+            
+        except Exception as e:
+            self.handle_error(f"Streaming failed: {e}")
+            # Ensure we sort of cleanup
+            try: ps.ps2000aStop(self.chandle)
+            except: pass
+            raise e
+        finally:
+            if self.state == InstrumentState.RUNNING:
+                self.to_state(InstrumentState.IDLE)
+
+    def reset_device(self):
+        """Attempts to soft-reset the scope state."""
+        try:
+             ps.ps2000aStop(self.chandle)
+        except: pass
+        self.to_state(InstrumentState.IDLE)
+

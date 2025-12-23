@@ -121,14 +121,17 @@ class CalibrationManager:
         y = df_dut['Photocurrent_A'].abs().values # absolute current
         
         # Remove low/zero power points to avoid noise? Or fit all?
-        # Fit linear
-        coeffs = np.polyfit(x, y, 1)
-        slope = coeffs[0]
-        intercept = coeffs[1]
+        # Fit linear with Intercept forced to 0 (Physical: I = R * P)
+        # Model: y = m * x
+        # Least squares solution: m = sum(x*y) / sum(x^2)
+        
+        # Optional: Use weighted least squares for LDR? 
+        # For now, simple zero-forced.
+        slope = np.sum(x*y) / np.sum(x**2)
+        intercept = 0.0
         
         # R2
-        p = np.poly1d(coeffs)
-        yhat = p(x)
+        yhat = slope * x 
         ybar = np.sum(y)/len(y)
         ssreg = np.sum((yhat-ybar)**2)
         sstot = np.sum((y - ybar)**2)

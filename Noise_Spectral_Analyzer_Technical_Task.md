@@ -27,9 +27,9 @@ The software must be **reproducible**, **calibration-aware**, and suitable for *
 
 | Instrument | Model | Control Method |
 |-----------|------|----------------|
-| Oscilloscope | PicoScope 4262 | PicoSDK |
+| Oscilloscope | PicoScope 4262 | PicoSDK | OR PicoScope 2208B| PicoSDK |
 | SMU | Keysight B2901 / Keithley | SCPI via PyVISA |
-| Amplifier | FEMTO OE-200-IN1 | Manual (user input) |
+| Amplifier | FEMTO OE-200-IN1 | Manual (user input) |OR variable resistor 10->100k Ohms
 | Light source | LED | SMU current control |
 | Calibration detector | Si photodiode | FEMTO + scope |
 
