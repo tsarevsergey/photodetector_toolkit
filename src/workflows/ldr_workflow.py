@@ -24,6 +24,8 @@ class LDRWorkflow:
         self.scope = scope
         self.logger = logging.getLogger("workflow.LDR")
         self.stop_requested = False
+        self.last_range_idx = None
+
         self.mock = smu.mock or scope.mock
         
     def run_sweep(self, 
@@ -460,6 +462,28 @@ class LDRWorkflow:
                 # Photocurrent from LockIn (More accurate than Vpp)
                 photocurrent = avg_lockin_amp / resistor_ohms
                 
+                # Calculate Johnson Noise (Thermal Limit)
+                johnson_noise_dens = signal_processing.calculate_johnson_noise(resistor_ohms)
+                
+                # Excess Noise Factor (Measured / Thermal)
+                excess_noise = 0
+                if johnson_noise_dens > 0:
+                    excess_noise = avg_noise_dens / johnson_noise_dens
+                
+                # Quantization Check
+                # 8-bit scope = 256 levels.
+                # If Vpp < 5 levels (approx 2% of range), we are in quantization noise.
+                scope_range_v = range_limits.get(current_range_str, 10.0)
+                lsb_v = scope_range_v / 256.0 # Approx full scale / 256? Or half scale? 
+                # PicoScope ranges are usually +/- Range (so Span = 2*Range).
+                # LSB = (2 * Range) / 256 = Range / 128
+                lsb_v = scope_range_v / 128.0 
+                
+                quantization_warning = False
+                if avg_vpp < 5 * lsb_v:
+                    self.logger.warning(f"Signal Vpp ({avg_vpp:.2e}V) is < 5 LSBs of Range {current_range_str}. Results may be quantization limited.")
+                    quantization_warning = True
+                
                 results.append({
                     "LED_Current_A": current_level,
                     "Scope_Vpp": avg_vpp,
@@ -471,10 +495,13 @@ class LDRWorkflow:
                     "SNR_Status": "OK" if avg_snr_time > min_snr_threshold else "LOW",
                     "LockIn_Amp_V": avg_lockin_amp,
                     "Noise_Density_V_rtHz": avg_noise_dens,
-                    "SNR_Broadband": calc_snr_1hz 
+                    "SNR_Broadband": calc_snr_1hz,
+                    "Johnson_Noise_V_rtHz": johnson_noise_dens,
+                    "Excess_Noise_Factor": excess_noise,
+                    "Quantization_Limited": quantization_warning
                 })
                 
-                print(f"[{i+1}/{steps}] I={current_level:.2e}A | Vpp={avg_vpp:.4f}V | SNR_Time={avg_snr_time:.1f} (Thresh {min_snr_threshold}) | Robust_SNR={calc_snr_1hz:.1f}")
+                print(f"[{i+1}/{steps}] I={current_level:.2e}A | Vpp={avg_vpp:.2e}V | Noise={avg_noise_dens:.2e} V/rtHz (Thermal {johnson_noise_dens:.2e} V/rtHz) | Q-Lim: {quantization_warning}")
                 
                 # Save state for persistence
                 self.last_range_idx = curr_range_idx

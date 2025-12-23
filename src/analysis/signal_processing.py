@@ -217,18 +217,32 @@ def calculate_robust_snr(voltage: np.ndarray, fs: float, target_freq: float) -> 
     # 2. Noise Density
     v_n_density = calculate_noise_density_sideband(voltage, fs, target_freq)
     
-    # 3. Bin Width (Effective Noise Bandwidth of reference "Bin")
-    # For consistency with FFT-based SNR (Peak/Floor), we normalize to bin width.
-    # Bin Width = fs / N
-    bin_width = fs / len(voltage)
+    # 3. Bandwidth (ENBW)
+    # The relevant bandwidth is the Effective Noise Bandwidth of the Lock-In Filter.
+    # We are effectively averaging over the entire duration T.
+    # For a boxcar average of time T, ENBW approx 1 / (2 * T).
+    # Bin Width (fs/N) = 1/T. So ENBW is approx half of bin width?
+    # Let's use 1 / (2 * duration) as a conservative estimate for "Spot" bandwidth.
+    
+    duration = len(voltage) / fs
+    enbw = 1.0 / (2.0 * duration)
     
     if v_n_density < 1e-12: return 1000.0 # High SNR Cap
     
     # Power Ratio
     signal_power = v_rms**2
-    noise_power_in_bin = v_n_density**2 * bin_width
+    noise_power_in_band = v_n_density**2 * enbw
     
-    return signal_power / noise_power_in_bin
+    return signal_power / noise_power_in_band
+
+def calculate_johnson_noise(resistance_ohms: float, temp_k: float = 300.0) -> float:
+    """
+    Calculates thermal (Johnson) noise voltage density in V/rtHz.
+    V_n = sqrt(4 * k_B * T * R)
+    """
+    if resistance_ohms <= 0: return 0.0
+    k_B = 1.380649e-23
+    return np.sqrt(4 * k_B * temp_k * resistance_ohms)
 
 def extract_valid_pulse_train(
     times: np.ndarray, 
