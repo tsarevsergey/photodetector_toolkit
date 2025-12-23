@@ -39,7 +39,11 @@ with tab_cal:
          meas_file = st.selectbox("Reference Measurement File (LED Current vs Photocurrent)", options=data_files, index=0 if data_files else None, key='an_cal_meas_sel')
          
     st.subheader("3. Settings")
-    cal_wl = st.number_input("LED Emission Wavelength (nm)", value=461.0, min_value=200.0, max_value=2000.0)
+    c_set1, c_set2 = st.columns(2)
+    with c_set1:
+        cal_wl = st.number_input("LED Emission Wavelength (nm)", value=461.0, min_value=200.0, max_value=2000.0)
+    with c_set2:
+        ref_area = st.number_input("Reference Diode Active Area (cm²)", value=1.0, format="%.4f")
     
     if st.button("Generate Calibration Curve", type="primary"):
         if not ref_file or not meas_file:
@@ -54,7 +58,7 @@ with tab_cal:
                 
                 # Store in session state for other tabs
                 st.session_state.active_calibration = df_cal
-                st.session_state.active_calibration_meta = {'wl': cal_wl, 'r_ref': r_val, 'fit_A': A, 'fit_B': B, 'fit_r2': r2}
+                st.session_state.active_calibration_meta = {'wl': cal_wl, 'r_ref': r_val, 'fit_A': A, 'fit_B': B, 'fit_r2': r2, 'ref_area': ref_area}
                 
                 st.success(f"Calibration Generated! R_ref({cal_wl}nm) = {r_val:.4f} A/W")
                 st.info(f"**Power Model (Extrapolation Enabled):** $P_{{opt}} = {A:.4e} \\cdot I_{{LED}}^{{{B:.4f}}}$ ($R^2={r2:.4f}$)")
@@ -154,13 +158,20 @@ with tab_ldr:
                     # Use Fitted Model
                     if 'fit_A' in meta and meta.get('fit_r2', 0) > 0.9:
                         A, B = meta['fit_A'], meta['fit_B']
-                        p_opt = A * (df_dut['LED_Current_A'] ** B)
-                        st.caption(f"Using Fitted Power Model: $P = {A:.2e} \\cdot I^{{{B:.3f}}}$")
+                        p_opt_ref = A * (df_dut['LED_Current_A'] ** B)
+                        st.caption(f"Using Fitted Power Model: $P_{{Ref}} = {A:.2e} \\cdot I^{{{B:.3f}}}$")
                     else:
                         cal_df = st.session_state.active_calibration
                         cal_df = cal_df.sort_values('LED_Current_A')
-                        p_opt = np.interp(df_dut['LED_Current_A'], cal_df['LED_Current_A'], cal_df['Optical_Power_W'])
+                        p_opt_ref = np.interp(df_dut['LED_Current_A'], cal_df['LED_Current_A'], cal_df['Optical_Power_W'])
                         st.warning("Using Linear Interpolation (No Extrapolation)")
+                    
+                    # SCALE by Area Ratio (P_dut = P_ref * (A_dut / A_ref))
+                    ref_area_val = meta.get('ref_area', 1.0)
+                    area_ratio = dev_area / ref_area_val
+                    
+                    p_opt = p_opt_ref * area_ratio
+                    # st.info(f"Applying Area Scaling: A_dut ({dev_area}) / A_ref ({ref_area_val}) = {area_ratio:.2f}")
                     
                     df_dut['Optical_Power_W'] = p_opt
                     
@@ -180,13 +191,35 @@ with tab_ldr:
                     intercept = 0.0
                     r2 = 0.0 # simple placeholder or calc if needed
                     
+                    # --- CALC: NEP ---
+                    # NEP (W/rtHz) = Noise Current Density (A/rtHz) / Responsivity (A/W)
+                    # We need Global Responsivity (A/W), not Density yet.
+                    # R_global (A/W) = Slope (A/W/cm2) * Area (cm2)?
+                    # OR we just fit I vs P directly.
+                    # Let's fit I vs P directly for R_global to be safe.
+                    
+                    x_fit_I = df_dut['Optical_Power_W'].values
+                    y_fit_I = df_dut['Photocurrent_A'].abs().values
+                    slope_global = np.sum(x_fit_I * y_fit_I) / np.sum(x_fit_I**2)
+                    
+                    if slope_global > 0:
+                         # Ensure we have Resistance info
+                         if 'Resistance_Ohms' in df_dut.columns and 'Noise_Density_V_rtHz' in df_dut.columns:
+                             df_dut['Current_Noise_Dens_A_rtHz'] = df_dut['Noise_Density_V_rtHz'] / df_dut['Resistance_Ohms']
+                             df_dut['NEP_W_rtHz'] = df_dut['Current_Noise_Dens_A_rtHz'] / slope_global
+                         else:
+                             df_dut['NEP_W_rtHz'] = np.nan
+                    else:
+                         df_dut['NEP_W_rtHz'] = np.nan
+
                     # --- REPORT ---
-                    k1, k2, k3 = st.columns(3)
-                    k1.metric("Responsivity", f"{slope_dens:.4f} A/W/cm²") # Or just A/W if normalized? No, it's density.
-                    k2.metric("Linearity (Fit)", "Power Law") # We used Power Law for Cal, Linear for DUT
-                    if 'Sensitivity_W_SNR3' in df_dut.columns:
-                        min_sens = df_dut['Sensitivity_W_SNR3'].min()
-                        k3.metric("Best Sensitivity (SNR=3)", f"{min_sens:.2e} W")
+                    k1, k2, k3, k4 = st.columns(4)
+                    k1.metric("Responsivity", f"{slope_dens:.4f} A/W/cm²") 
+                    k2.metric("Abs. Responsivity", f"{slope_global:.4f} A/W")
+                    k3.metric("Linearity (Fit)", "Power Law") 
+                    
+                    min_nep = df_dut['NEP_W_rtHz'].min() if 'NEP_W_rtHz' in df_dut.columns else 0
+                    k4.metric("Best NEP", f"{min_nep:.2e} W/√Hz")
                     
                     # --- PLOTS ---
                     c_p1, c_p2 = st.columns(2)
@@ -206,21 +239,25 @@ with tab_ldr:
                         st.plotly_chart(fig_ldr, use_container_width=True)
                         
                     with c_p2:
-                        # Sensitivity Plot
-                        if 'Sensitivity_W_SNR3' in df_dut.columns:
-                            fig_nep = px.line(df_dut, x="Optical_Power_W", y="Sensitivity_W_SNR3", 
-                                              log_x=True, log_y=True,
-                                              title="Sensitivity (SNR=3) vs Optical Power",
-                                              labels={'Sensitivity_W_SNR3': 'Min Power @ SNR=3 (W)', 'Optical_Power_W': 'Optical Power (W)'})
-                            st.plotly_chart(fig_nep, use_container_width=True)
-                    
+                        # Sensitivity / NEP Plot
+                        # Switch between NEP and Min Power? Default to NEP as requested.
+                        if 'NEP_W_rtHz' in df_dut.columns:
+                             # Filter valid
+                             df_nep = df_dut[df_dut['NEP_W_rtHz'] > 0]
+                             fig_nep = px.line(df_nep, x="Optical_Power_W", y="NEP_W_rtHz",
+                                               log_x=True, log_y=True,
+                                               title="NEP vs Optical Power",
+                                               labels={'NEP_W_rtHz': 'NEP (W/√Hz)', 'Optical_Power_W': 'Optical Power (W)'})
+                             st.plotly_chart(fig_nep, use_container_width=True)
+                        
                     st.dataframe(df_dut.style.format({
                         "LED_Current_A": "{:.2e}",
                         "Optical_Power_W": "{:.2e}",
                         "Photocurrent_A": "{:.2e}",
+                        "Current_Density_A_cm2": "{:.2e}",
+                        "NEP_W_rtHz": "{:.2e}",
                         "Sensitivity_W_SNR3": "{:.2e}",
                         "SNR_Time": "{:.1f}",
-                        "SNR_FFT": "{:.1f}",
                         "Scope_Vpp": "{:.2e}"
                     }, na_rep="-"))
                     

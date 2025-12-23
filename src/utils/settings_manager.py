@@ -19,10 +19,14 @@ DEFAULT_SETTINGS = {
     "sweep_steps": 10,
     "capture_delay_cycles": 0,
     "sweep_freq": 40.0,
+    "duty_cycle": 50.0,
     "acquisition_mode": "Block",
     "capture_duration": 0.5,
     "sample_rate": 100000.0,
-    "scope_range_idx": 4
+    "scope_range_idx": 6, # 1V default
+    "auto_range": True,
+    "ac_coupling": False,
+    "suppress_info_logs": True
 }
 
 class SettingsManager:

@@ -34,22 +34,35 @@ atexit.register(cleanup)
 st.markdown("""
 ### Welcome to the Noise Spectral Analyzer Control Software.
 
-Please select a tool from the sidebar to begin:
+This toolset allows for precise characterization of photodetector noise performance, linear dynamic range (LDR), and signal stability.
 
-- **1. SMU Direct Control**: Manual control of SMU for IV curves and testing.
-- **2. Pulse Generator**: Generate square wave pulses for LED driving.
-- **3. Scope Commissioning**: Setup and test PicoScope acquisition.
-- **4. LDR Measurement**: Main Linear Dynamic Range and Noise Analysis workflow.
+**Available Tools:**
+
+- **1. SMU Direct Control**: Manual control of SMU for IV curves and basic testing.
+- **2. Pulse Generator**: Generate square wave pulses for LED driving / Linearity tests.
+- **3. Scope Commissioning**: Setup, test, and validate PicoScope acquisition.
+- **4. LDR Measurement**: **Main Workflow**. Automated sweeps for LDR, SNR, and Noise Density analysis.
+- **5. Post Analysis**: Offline processing, Calibration, Linear Fitting, and NEP/Trace visualization.
 
 ---
 """)
 
 # --- GLOBAL CONFIGURATION ---
 
+# 1. Initialize Settings Manager (Singleton Access)
+from utils.settings_manager import SettingsManager
+if 'settings_mgr' not in st.session_state:
+    st.session_state.settings_mgr = SettingsManager()
+
+# Load Global Log Preference
+if 'pref_suppress_info' not in st.session_state:
+    st.session_state.pref_suppress_info = st.session_state.settings_mgr.get("suppress_info_logs", True)
+
 if 'global_amp_type' not in st.session_state: st.session_state.global_amp_type = "Passive Resistor"
 if 'global_resistor_val' not in st.session_state: st.session_state.global_resistor_val = 1000.0
 if 'global_tia_gain' not in st.session_state: st.session_state.global_tia_gain = 1000.0
 if 'global_safety_max_v' not in st.session_state: st.session_state.global_safety_max_v = 9.5
+
 
 with st.sidebar:
     st.header("⚙️ Global Device Config")
@@ -88,6 +101,18 @@ with st.sidebar:
         r_val = st.number_input("Load Resistor (Ω)", value=st.session_state.global_resistor_val, format="%.2f")
         st.session_state.global_resistor_val = r_val
         st.session_state.global_safety_max_v = 10.0
+        
+    st.divider()
+    
+    # Log Level Control
+    suppress_logs = st.checkbox("Suppress INFO Logs", value=st.session_state.pref_suppress_info, 
+                               help="Hide verbose green INFO messages in the log window.")
+    
+    # Check change and persist
+    if suppress_logs != st.session_state.pref_suppress_info:
+        st.session_state.pref_suppress_info = suppress_logs
+        st.session_state.settings_mgr.set("suppress_info_logs", suppress_logs)
+        st.toast(f"Log Level Updated: {'Suppressed' if suppress_logs else 'Verbose'}")
 
 st.write("---")
 st.write("**Current Configuration:**")

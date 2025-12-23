@@ -34,11 +34,14 @@ if 'pref_initialized' not in st.session_state:
     
     # Initialize defaults for others if needed
     if 'sweep_freq' not in st.session_state: st.session_state.sweep_freq = settings.get("sweep_freq")
-    if 'sweep_duty' not in st.session_state: st.session_state.sweep_duty = 0.5
+    if 'sweep_duty' not in st.session_state: st.session_state.sweep_duty = settings.get("duty_cycle")
     if 'pref_scope_range_idx' not in st.session_state: st.session_state.pref_scope_range_idx = settings.get("scope_range_idx")
     if 'pref_acq_mode' not in st.session_state: st.session_state.pref_acq_mode = settings.get("acquisition_mode")
     if 'pref_duration' not in st.session_state: st.session_state.pref_duration = settings.get("capture_duration")
     if 'pref_sample_rate' not in st.session_state: st.session_state.pref_sample_rate = settings.get("sample_rate")
+    
+    if 'pref_auto_range' not in st.session_state: st.session_state.pref_auto_range = settings.get("auto_range")
+    if 'pref_ac_coupling' not in st.session_state: st.session_state.pref_ac_coupling = settings.get("ac_coupling")
     
     st.session_state.pref_initialized = True
 
@@ -132,43 +135,8 @@ with tab_settings:
          st.number_input("Sample Rate (Hz)", value=st.session_state.pref_sample_rate, min_value=1000.0, max_value=1000000.0, step=1000.0, key='pref_sample_rate', on_change=update_rate, help="Only used in Streaming mode. Block mode auto-calculates.")
 
     st.divider()
-    st.subheader("Light Source Calibration")
-    
-    if 'cal_led_wavelength' not in st.session_state: st.session_state.cal_led_wavelength = 461.0
-    st.number_input("LED Wavelength (nm)", value=st.session_state.cal_led_wavelength, min_value=200.0, max_value=2000.0, key='cal_led_wavelength')
-    
-    # File Selection (Assume files are in data folder or root)
-    # We can list files or just let user type path. List is better.
-    import glob
-    data_files = glob.glob("data/*.csv") + glob.glob("*.csv")
-    
-    if 'cal_ref_file' not in st.session_state: st.session_state.cal_ref_file = "data/SiDiodeResponsivity.csv"
-    if 'cal_meas_file' not in st.session_state: st.session_state.cal_meas_file = "data/Si_cal1.csv"
-    
-    ref_file = st.selectbox("Reference Responsivity File", options=data_files, index=0 if not data_files else None, key='cal_ref_sel') 
-    meas_file = st.selectbox("Reference Measurement File", options=data_files, index=0 if not data_files else None, key='cal_meas_sel')
-    
-    if st.button("🔄 Generate Power Calibration"):
-        try:
-            cal_mgr = CalibrationManager()
-            # Use absolute paths if selected from list
-            led_cal, r_val = cal_mgr.generate_led_calibration(meas_file, ref_file, st.session_state.cal_led_wavelength)
-            
-            # Save to session
-            st.session_state.led_calibration = led_cal
-            st.session_state.ref_responsivity_val = r_val
-            st.success(f"Calibration Generated! R_ref({st.session_state.cal_led_wavelength}nm) = {r_val:.4f} A/W")
-            
-            # Show preview
-            st.dataframe(led_cal.head())
-            
-        except Exception as e:
-            st.error(f"Calibration failed: {e}")
-
-    if 'led_calibration' in st.session_state:
-        st.success("✅ LED Calibration Active")
-    else:
-        st.info("ℹ️ No calibration loaded. Results will be in Current only.")
+    st.divider()
+    st.info("ℹ️ Light Source Calibration has been moved to **Post Analysis**.")
 
     st.info("Settings are saved automatically for this session.")
 
@@ -279,9 +247,9 @@ with tab_measure:
         # Advanced Scope Settings
         c_scope1, c_scope2 = st.columns(2)
         with c_scope1:
-            auto_range = st.checkbox("Auto-Range", value=False, help="Automatically adjust scope range during sweep")
+            auto_range = st.checkbox("Auto-Range", value=st.session_state.pref_auto_range, key='pref_auto_range', help="Automatically adjust scope range during sweep")
         with c_scope2:
-            ac_coupling = st.checkbox("AC Coupling", value=False, help="Use AC coupling to reject ambient light")
+            ac_coupling = st.checkbox("AC Coupling", value=st.session_state.pref_ac_coupling, key='pref_ac_coupling', help="Use AC coupling to reject ambient light")
         
         st.divider()
         
@@ -360,7 +328,7 @@ if 'paused_state' in st.session_state:
                     compliance_limit=voltage_limit,
                     resistor_ohms=r_val,
                     averages=averages,
-                    scope_range=scope_range_val,
+                    scope_range=state.get('last_range_string', scope_range_val),
                     auto_range=auto_range,
                     ac_coupling=ac_coupling,
                     start_delay_cycles=delay_cycles,
@@ -443,7 +411,8 @@ if 'paused_state' in st.session_state:
                 'snr': e.snr,
                 'current_level': e.current_level,
                 'results': e.last_results,
-                'waveforms': e.last_waveforms
+                'waveforms': e.last_waveforms,
+                'last_range_string': getattr(e, 'last_range_str', None)
             }
              st.rerun()
         except Exception as e:
@@ -457,7 +426,8 @@ if 'paused_state' in st.session_state:
                     'snr': e.snr,
                     'current_level': e.current_level,
                     'results': e.last_results,
-                    'waveforms': e.last_waveforms
+                    'waveforms': e.last_waveforms,
+                    'last_range_string': getattr(e, 'last_range_str', None)
                 }
                  st.rerun()
              else:
@@ -519,7 +489,11 @@ if start_btn and 'paused_state' not in st.session_state:
             "sweep_start": start_i,
             "sweep_stop": stop_i,
             "sweep_steps": steps,
-            "capture_delay_cycles": delay_cycles
+            "capture_delay_cycles": delay_cycles,
+            "duty_cycle": duty,
+            "scope_range_idx": scope_range_options.index(scope_range_val) if scope_range_val in scope_range_options else 6,
+            "auto_range": auto_range,
+            "ac_coupling": ac_coupling
         })
     
         # Construct Path: Base / SampleName_Timestamp

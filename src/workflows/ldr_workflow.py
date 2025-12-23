@@ -11,12 +11,13 @@ from hardware.scope_controller import ScopeController
 import analysis.signal_processing as signal_processing
 
 class ResistorChangeRequiredException(Exception):
-    def __init__(self, step_index, snr, current_level, last_results, last_waveforms):
+    def __init__(self, step_index, snr, current_level, last_results, last_waveforms, last_range_str="10V"):
         self.step_index = step_index
         self.snr = snr
         self.current_level = current_level
         self.last_results = last_results
         self.last_waveforms = last_waveforms
+        self.last_range_str = last_range_str
 
 class LDRWorkflow:
     def __init__(self, smu: SMUController, scope: ScopeController):
@@ -544,7 +545,7 @@ class LDRWorkflow:
                         self.smu.disable_output()
                     except:
                         pass
-                    raise ResistorChangeRequiredException(i, avg_snr_time, current_level, results, waveforms)
+                    raise ResistorChangeRequiredException(i, avg_snr_time, current_level, results, waveforms, range_list[curr_range_idx])
 
             except ResistorChangeRequiredException:
                 raise # Re-raise immediately to bubbling up
