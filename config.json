@@ -8,10 +8,10 @@
     "min_cycles": 200,
     "led_compliance": 9.0,
     "averages": 1,
-    "resistor": 1000.0,
+    "resistor": 100000000.0,
     "sweep_start": 0.001,
     "sweep_stop": 1e-05,
-    "sweep_steps": 5,
+    "sweep_steps": 8,
     "capture_delay_cycles": 50,
     "sweep_freq": 80.0,
     "duty_cycle": 0.5,
@@ -21,5 +21,9 @@
     "scope_range_idx": 6,
     "auto_range": true,
     "ac_coupling": true,
-    "suppress_info_logs": true
+    "suppress_info_logs": true,
+    "global_amp_type": "FEMTO TIA",
+    "global_resistor_val": 1000.0,
+    "global_tia_gain": 10000000000.0,
+    "global_safety_max_v": 10.0
 }

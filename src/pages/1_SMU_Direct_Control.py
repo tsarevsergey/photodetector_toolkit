@@ -9,8 +9,12 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from hardware.smu_controller import SMUController, InstrumentState
+from utils.settings_manager import SettingsManager
+from utils.ui_components import render_global_sidebar
 
 st.set_page_config(page_title="SMU Direct Control", layout="wide")
+settings = SettingsManager()
+render_global_sidebar(settings)
 
 st.title("⚡ SMU Direct Control Interface")
 
@@ -63,7 +67,8 @@ def generate_sweep_points(start, stop, steps, mode, direction):
 
 # --- Sidebar: Connection & Configuration ---
 with st.sidebar:
-    st.header("Connection")
+    st.divider() # Separate from global config
+    st.header("SMU Connection")
     
     # Default address from ports.txt or fallback
     default_addr = os.getenv("SMU_ADDRESS", "USB0::0x0957::0xCD18::MY51143841::0::INSTR")

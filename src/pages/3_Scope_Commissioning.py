@@ -11,8 +11,12 @@ import numpy as np
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from hardware.scope_controller import ScopeController, InstrumentState
+from utils.settings_manager import SettingsManager
+from utils.ui_components import render_global_sidebar
 
 st.set_page_config(page_title="Scope Commissioning", layout="wide")
+settings = SettingsManager()
+render_global_sidebar(settings)
 st.title("📉 PicoScope 2208B Commissioning")
 
 # --- Session State ---
@@ -26,6 +30,7 @@ if 'scope_connected' not in st.session_state:
 
 # --- Sidebar: Connection ---
 with st.sidebar:
+    st.divider() # Separate from global config
     st.header("Scope Connection")
     mock_mode = st.checkbox("Mock Mode", value=False)
     

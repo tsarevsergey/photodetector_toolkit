@@ -8,8 +8,12 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from hardware.smu_controller import SMUController, InstrumentState
+from utils.settings_manager import SettingsManager
+from utils.ui_components import render_global_sidebar
 
 st.set_page_config(page_title="SMU List Sweep / Pulse Generator", layout="wide")
+settings = SettingsManager()
+render_global_sidebar(settings)
 
 st.title("🌊 SMU List Sweep & Pulse Generator")
 

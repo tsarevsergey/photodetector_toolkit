@@ -11,13 +11,14 @@ from hardware.scope_controller import ScopeController
 import analysis.signal_processing as signal_processing
 
 class ResistorChangeRequiredException(Exception):
-    def __init__(self, step_index, snr, current_level, last_results, last_waveforms, last_range_str="10V"):
+    def __init__(self, step_index, snr, current_level, last_results, last_waveforms, last_range_str="10V", step_waveform=None):
         self.step_index = step_index
         self.snr = snr
         self.current_level = current_level
         self.last_results = last_results
         self.last_waveforms = last_waveforms
         self.last_range_str = last_range_str
+        self.step_waveform = step_waveform
 
 class LDRWorkflow:
     def __init__(self, smu: SMUController, scope: ScopeController):
@@ -44,7 +45,7 @@ class LDRWorkflow:
                   min_snr_threshold: float = 25.0,
                   start_delay_cycles: int = 0,
                   min_pulse_cycles: int = 100, 
-                  progress_callback: Callable[[float, str], None] = None,
+                  progress_callback: Callable[[float, str, dict], None] = None,
                   start_step_index: int = 0,
                   previous_results: list = None,
                   previous_waveforms: list = None,
@@ -156,7 +157,7 @@ class LDRWorkflow:
             if self.stop_requested: break
             
             if progress_callback:
-                progress_callback((i / steps), f"Step {i+1}/{steps}: {current_level*1000:.2f} mA")
+                progress_callback((i / steps), f"Step {i+1}/{steps}: {current_level*1000:.2f} mA", {})
             
             # WORKFLOW SAFETY CHECK: Monotonicity
             # Ensure we are not increasing current (going backwards) which could be dangerous
@@ -208,6 +209,7 @@ class LDRWorkflow:
                 step_waveforms = None
                 
                 while retry_count < max_retries:
+                    if self.stop_requested: break
                     retry_count += 1
                     current_range_str = range_list[curr_range_idx]
                     
@@ -347,8 +349,19 @@ class LDRWorkflow:
                                  try: self.smu.resource.write("ABOR") 
                                  except: pass
                                  time.sleep(0.2)
-                                 continue
-                     
+                                 continue # NEXT RETRY
+                    
+                    # --- UPDATE PREVIEW after trial capture ---
+                    if progress_callback and len(volts) > 0:
+                        _, _, trial_vpp, trial_snr = self.analyze_pulse_snr(volts)
+                        progress_callback((i/steps), f"Step {i+1}/{steps}: Measuring...", {
+                            "vpp": trial_vpp,
+                            "snr": trial_snr,
+                            "range": current_range_str,
+                            "times": times[::4], 
+                            "volts": volts[::4]
+                        })
+
                     # If we are here, range is Good or acceptable
                     # Now perform the actual averaging and SNR calculation
                     vpps = []
@@ -545,7 +558,7 @@ class LDRWorkflow:
                         self.smu.disable_output()
                     except:
                         pass
-                    raise ResistorChangeRequiredException(i, avg_snr_time, current_level, results, waveforms, range_list[curr_range_idx])
+                    raise ResistorChangeRequiredException(i, avg_snr_time, current_level, results, waveforms, range_list[curr_range_idx], step_waveform=step_waveforms)
 
             except ResistorChangeRequiredException:
                 raise # Re-raise immediately to bubbling up
