@@ -76,7 +76,7 @@ if scope.state == InstrumentState.ERROR:
     st.stop()
 
 # --- tabs ---
-config_tab, capture_tab = st.tabs(["Configuration", "Capture & View"])
+config_tab, capture_tab, noise_tab = st.tabs(["Configuration", "Capture & View", "Noise Calibration"])
 
 with config_tab:
     st.subheader("Channel Setup")
@@ -229,3 +229,125 @@ with capture_tab:
                           title=f"Noise Density ({view_metric}) | Gain: {gain_disp:.1e} Ω")
         
         st.plotly_chart(fft_fig, use_container_width=True)
+
+with noise_tab:
+    st.subheader("Noise Floor Calibration (Johnson Noise)")
+    st.info("Compare measured noise against the theoretical thermal limits of a source resistor.")
+    
+    n1, n2, n3, n4, n5 = st.columns(5)
+    with n1:
+        source_r_ohms = st.number_input("Source Resistor (Ω)", value=1000.0, format="%.2e", min_value=1.0)
+    with n2:
+        cal_gain = st.number_input("TIA Gain (V/A)", value=1000.0, format="%.2e", min_value=1.0)
+    with n3:
+        cal_range = st.selectbox("Scope Range", ['10MV', '20MV', '50MV', '100MV', '200MV', '500MV', '1V', '2V'], index=0, help="Use lowest range possible without clipping.")
+    with n4:
+        cal_coupling = st.selectbox("Coupling", ["AC", "DC"], index=0)
+    with n5:
+        cal_duration = st.number_input("Cal Duration (s)", value=1.0, step=0.5)
+
+    if st.button("Measure Noise Floor", type="primary"):
+        with st.spinner("Measuring Noise..."):
+             try:
+                # Config Scope: 100kS/s, Selected Coupling
+                scope.configure_channel('A', True, cal_range, cal_coupling)
+                # Block capture
+                sample_rate = 100000.0 # 100k is good bandwidth
+                num_samples = int(sample_rate * cal_duration)
+                
+                tb_idx = scope.calculate_timebase_index(cal_duration, num_samples)
+                
+                times, volts = scope.capture_block(tb_idx, num_samples)
+                
+                if len(times) > 0:
+                     st.session_state.cal_times = times
+                     st.session_state.cal_volts = volts
+                     st.session_state.cal_params = {
+                         'r_source': source_r_ohms,
+                         'gain': cal_gain
+                     }
+                     st.rerun()
+                else:
+                    st.error("Capture returned empty.")
+             except Exception as e:
+                 st.error(f"Error: {e}")
+
+    # Persistent Analysis Block
+    if 'cal_times' in st.session_state:
+        times = st.session_state.cal_times
+        volts = st.session_state.cal_volts
+        params = st.session_state.cal_params
+        
+        r_val = params.get('r_source', source_r_ohms)
+        g_val = params.get('gain', cal_gain)
+        
+        # Calculate Theoretical Noise
+        k_B = 1.380649e-23
+        T = 300.0
+        
+        i_n_th = np.sqrt(4 * k_B * T / r_val) # A/rtHz
+        v_n_th = i_n_th * g_val # V/rtHz (at output)
+        
+        st.divider()
+        st.write(f"**Theoretical Estimates** (R={r_val:.2e}Ω, T=300K):")
+        st.write(f"- Johnson Current Noise: **{i_n_th*1e12:.3f} pA/√Hz**")
+        
+        # Smart Unit Formatting
+        if v_n_th < 1e-6:
+            v_disp = f"{v_n_th*1e9:.2f} nV/√Hz"
+        elif v_n_th < 1e-3:
+            v_disp = f"{v_n_th*1e6:.2f} µV/√Hz"
+        else:
+            v_disp = f"{v_n_th*1e3:.2f} mV/√Hz"
+            
+        st.write(f"- Exp. Output Noise: **{v_disp}**")
+        
+        if g_val > 1e9:
+            st.warning("⚠️ High Gain (>1G) usually implies Low Bandwidth (<1kHz). Ensure you measure noise inside the TIA's bandwidth!")
+        
+        # Calculate Measured PSD
+        from scipy.signal import welch
+        fs = 1.0 / (times[1] - times[0])
+        f, Pxx = welch(volts, fs, nperseg=min(len(volts), 4096))
+        asd_meas = np.sqrt(Pxx)
+        
+        # Plot Frame
+        df_cal = pd.DataFrame({'Freq (Hz)': f, 'Measured Noise (V/rtHz)': asd_meas})
+        df_cal['Theoretical (Johnson)'] = v_n_th
+        
+        # Filter Display Range
+        df_cal = df_cal[(df_cal['Freq (Hz)'] > 5) & (df_cal['Freq (Hz)'] < fs/2.1)]
+        
+        fig_cal = px.line(df_cal, x='Freq (Hz)', y=['Measured Noise (V/rtHz)', 'Theoretical (Johnson)'], 
+                          log_x=True, log_y=True, title="Noise Calibration: Measured vs Theoretical")
+        st.plotly_chart(fig_cal, use_container_width=True)
+        
+        # Metrics (Interactive Band)
+        c_b1, c_b2 = st.columns(2)
+        with c_b1: 
+            f_start = st.number_input("Analysis Freq Start (Hz)", value=10.0, step=10.0)
+        with c_b2:
+            f_stop = st.number_input("Analysis Freq Stop (Hz)", value=100.0 if g_val > 1e9 else 10000.0, step=100.0)
+        
+        mask = (df_cal['Freq (Hz)'] >= f_start) & (df_cal['Freq (Hz)'] <= f_stop)
+        if mask.any():
+            median_noise = df_cal[mask]['Measured Noise (V/rtHz)'].median()
+            
+            if median_noise < 1e-3:
+                meas_disp = f"{median_noise*1e6:.1f} µV/√Hz"
+            else:
+                meas_disp = f"{median_noise*1e3:.1f} mV/√Hz"
+                
+            st.metric(f"Measured Floor ({int(f_start)}-{int(f_stop)} Hz)", meas_disp)
+            
+            excess = median_noise / v_n_th
+            st.metric("Excess Noise Factor", f"{excess:.2f}x", delta_color="inverse")
+            
+            if excess < 0.5:
+                st.error("📉 Result too LOW (< 0.5x). Bandwidth limit reached? Check TIA BW.")
+            elif excess < 1.0:
+                st.success("✅ Below Thermal Limit? Possible roll-off. Or Gain lower than expected.")
+            elif excess < 2.0:
+                st.success("✅ Good Agreement (< 2x Thermal)")
+            else:
+                st.warning("⚠️ High Excess Noise (> 2x). Check shielding/grounding.")
