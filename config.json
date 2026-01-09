@@ -57,7 +57,7 @@
     "global_amp_type": "FEMTO TIA",
     "global_resistor_val": 1000.0,
     "global_tia_gain": 10000000.0,
-    "global_safety_max_v": 10.0,
+    "global_safety_max_v": 1.0,
     "last_dut_file": "data\\Sibox3OD_20260107_144444\\Sibox3OD_results_resumed.csv",
     "last_trace_file": "data\\Sibox3OD2_darkwrap_20260107_145751\\trace_step_5_I7.20e-05A_avg1.csv"
 }

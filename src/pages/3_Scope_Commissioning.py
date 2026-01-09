@@ -32,21 +32,10 @@ def init_pref(key, setting_key=None):
     if key not in st.session_state:
         st.session_state[key] = settings.get(setting_key)
 
-# Helper to save settings
-def save_setting(key, value):
-    settings.set(key, value)
-
-def update_ch_a_en(): save_setting("scope_ch_a_enabled", st.session_state.scope_ch_a_enabled)
-def update_ch_a_range(): save_setting("scope_ch_a_range", st.session_state.scope_ch_a_range)
-def update_ch_a_coup(): save_setting("scope_ch_a_coupling", st.session_state.scope_ch_a_coupling)
-def update_ch_b_en(): save_setting("scope_ch_b_enabled", st.session_state.scope_ch_b_enabled)
-def update_ch_b_range(): save_setting("scope_ch_b_range", st.session_state.scope_ch_b_range)
-def update_ch_b_coup(): save_setting("scope_ch_b_coupling", st.session_state.scope_ch_b_coupling)
-def update_acq_mode(): save_setting("scope_acq_mode", st.session_state.scope_acq_mode)
-def update_block_dur(): save_setting("scope_block_duration_ms", st.session_state.scope_block_duration_ms)
-def update_stream_dur(): save_setting("scope_streaming_duration_s", st.session_state.scope_streaming_duration_s)
-def update_samples(): save_setting("scope_num_samples", st.session_state.scope_num_samples)
-def update_rate(): save_setting("scope_sample_rate", st.session_state.scope_sample_rate)
+# Generic callback to save any setting from session_state
+def update_setting(key):
+    if key in st.session_state:
+        settings.set(key, st.session_state[key])
 
 # Initialize all prefs
 init_pref("scope_ch_a_enabled")
@@ -121,69 +110,63 @@ config_tab, capture_tab, noise_tab, detect_tab = st.tabs(["Configuration", "Capt
 
 with config_tab:
     st.subheader("Channel Setup")
-    c1, c2 = st.columns(2)
+    col_a, col_b = st.columns(2)
     
-    ranges = ['10MV', '20MV', '50MV', '100MV', '200MV', '500MV', '1V', '2V', '5V', '10V', '20V']
+    ranges = ['20mV', '50mV', '100mV', '200mV', '500mV', '1V', '2V', '5V', '10V', '20V']
     
-    with c1:
-        st.markdown("### Channel A")
-        range_opts = ranges
-        range_idx = range_opts.index(st.session_state.scope_ch_a_range)
-        coup_opts = ["DC", "AC"]
-        coup_idx = coup_opts.index(st.session_state.scope_ch_a_coupling)
-        
-        en_a = st.checkbox("Enable Ch A", value=st.session_state.scope_ch_a_enabled, key="scope_ch_a_enabled", on_change=update_ch_a_en)
-        range_a = st.selectbox("Range A", range_opts, index=range_idx, key="scope_ch_a_range", on_change=update_ch_a_range)
-        coup_a = st.selectbox("Coupling A", coup_opts, index=coup_idx, key="scope_ch_a_coupling", on_change=update_ch_a_coup)
+    with col_a:
+        st.subheader("Channel A")
+        st.checkbox("Enabled", key="scope_ch_a_enabled", on_change=update_setting, args=("scope_ch_a_enabled",))
+        st.selectbox("Range", ranges, key="scope_ch_a_range", on_change=update_setting, args=("scope_ch_a_range",))
+        st.selectbox("Coupling", ["DC", "AC"], key="scope_ch_a_coupling", on_change=update_setting, args=("scope_ch_a_coupling",))
         
         if st.button("Apply Ch A"):
-            scope.configure_channel('A', en_a, range_a, coup_a)
+            scope.configure_channel('A', st.session_state.scope_ch_a_enabled, st.session_state.scope_ch_a_range, st.session_state.scope_ch_a_coupling)
             st.success("Ch A Configured")
             
-    with c2:
-        st.markdown("### Channel B")
-        range_idx_b = range_opts.index(st.session_state.scope_ch_b_range)
-        coup_idx_b = coup_opts.index(st.session_state.scope_ch_b_coupling)
-        
-        en_b = st.checkbox("Enable Ch B", value=st.session_state.scope_ch_b_enabled, key="scope_ch_b_enabled", on_change=update_ch_b_en)
-        range_b = st.selectbox("Range B", range_opts, index=range_idx_b, key="scope_ch_b_range", on_change=update_ch_b_range)
-        coup_b = st.selectbox("Coupling B", coup_opts, index=coup_idx_b, key="scope_ch_b_coupling", on_change=update_ch_b_coup)
+    with col_b:
+        st.subheader("Channel B")
+        st.checkbox("Enabled", key="scope_ch_b_enabled", on_change=update_setting, args=("scope_ch_b_enabled",))
+        st.selectbox("Range", ranges, key="scope_ch_b_range", on_change=update_setting, args=("scope_ch_b_range",))
+        st.selectbox("Coupling", ["DC", "AC"], key="scope_ch_b_coupling", on_change=update_setting, args=("scope_ch_b_coupling",))
         
         if st.button("Apply Ch B"):
-            scope.configure_channel('B', en_b, range_b, coup_b)
+            scope.configure_channel('B', st.session_state.scope_ch_b_enabled, st.session_state.scope_ch_b_range, st.session_state.scope_ch_b_coupling)
             st.success("Ch B Configured")
 
 with capture_tab:
     st.subheader("Capture")
     
     # 1. Acquisition Settings
-    c_mode, c_dur = st.columns(2)
-    
-    with c_mode:
-        acq_mode_opts = ["Block", "Streaming"]
-        acq_mode_idx = acq_mode_opts.index(st.session_state.scope_acq_mode)
-        acq_mode = st.radio("Acquisition Mode", acq_mode_opts, index=acq_mode_idx, key="scope_acq_mode", on_change=update_acq_mode, help="Block: Short, high speed. Streaming: Long, continuous.")
+    with st.expander("Acquisition Settings / Timebase", expanded=True):
+        col_mode, col_p1, col_p2 = st.columns([1, 1, 1])
+        with col_mode:
+            st.radio("Mode", ["Block", "Streaming"], key="scope_acq_mode", on_change=update_setting, args=("scope_acq_mode",))
         
-    with c_dur:
-        if acq_mode == "Block":
-            duration_ms = st.number_input("Duration (ms)", value=st.session_state.scope_block_duration_ms, min_value=0.1, max_value=5000.0, step=10.0, key="scope_block_duration_ms", on_change=update_block_dur)
-            duration_s = duration_ms / 1000.0
-        else:
-            duration_s = st.number_input("Duration (s)", value=st.session_state.scope_streaming_duration_s, min_value=0.1, max_value=100.0, step=0.5, key="scope_streaming_duration_s", on_change=update_stream_dur)
+        with col_p1:
+            st.number_input("Block Duration (ms)", min_value=1.0, step=1.0, key="scope_block_duration_ms", on_change=update_setting, args=("scope_block_duration_ms",))
+            st.number_input("Streaming Duration (s)", min_value=0.1, step=0.1, key="scope_streaming_duration_s", on_change=update_setting, args=("scope_streaming_duration_s",))
+        
+        with col_p2:
+            st.number_input("Num Samples", min_value=100, step=100, key="scope_num_samples", on_change=update_setting, args=("scope_num_samples",))
+            st.number_input("Sample Rate (Hz)", min_value=1000.0, max_value=1000000.0, step=1000.0, key="scope_sample_rate", on_change=update_setting, args=("scope_sample_rate",))
 
-    # 2. Resolution Settings
+    acq_mode = st.session_state.scope_acq_mode
+    duration_ms = st.session_state.scope_block_duration_ms
+    duration_s = st.session_state.scope_streaming_duration_s
+    num_samples = st.session_state.scope_num_samples
+    sample_rate = st.session_state.scope_sample_rate
+
+    # Display effective rate/samples
     c_res1, c_res2 = st.columns(2)
-    
     with c_res1:
         if acq_mode == "Block":
-            num_samples = st.number_input("Number of Samples", value=st.session_state.scope_num_samples, min_value=100, max_value=20000, key="scope_num_samples", on_change=update_samples)
+            st.metric("Block Duration (s)", f"{duration_ms / 1000.0:.3f}")
         else:
-            sample_rate = st.number_input("Sample Rate (Hz)", value=st.session_state.scope_sample_rate, min_value=1000.0, max_value=1000000.0, step=10000.0, key="scope_sample_rate", on_change=update_rate)
-            
+            st.metric("Streaming Duration (s)", f"{duration_s:.3f}")
     with c_res2:
         if scope and st.session_state.scope_connected:
             if acq_mode == "Block":
-                tb_idx = scope.calculate_timebase_index(duration_s, num_samples)
                 st.metric("Effective Rate", f"{(num_samples/duration_s)/1000:.1f} kS/s")
                 st.caption(f"Timebase Index: {tb_idx}")
             else:

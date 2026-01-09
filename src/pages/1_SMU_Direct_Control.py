@@ -32,17 +32,10 @@ def init_pref(key, setting_key=None):
     if key not in st.session_state:
         st.session_state[key] = settings.get(setting_key)
 
-# Helper to save settings
-def save_setting(key, value):
-    settings.set(key, value)
-
-def update_iv_start(): save_setting("iv_start", st.session_state.iv_start)
-def update_iv_stop(): save_setting("iv_stop", st.session_state.iv_stop)
-def update_iv_steps(): save_setting("iv_steps", st.session_state.iv_steps)
-def update_iv_mode(): save_setting("iv_mode", st.session_state.iv_mode)
-def update_iv_dir(): save_setting("iv_direction", st.session_state.iv_direction)
-def update_iv_nplc(): save_setting("iv_nplc", st.session_state.iv_nplc)
-def update_iv_comp(): save_setting("iv_compliance", st.session_state.iv_compliance)
+# Generic callback to save any setting from session_state
+def update_setting(key):
+    if key in st.session_state:
+        settings.set(key, st.session_state[key])
 
 # Initialize prefs
 init_pref("iv_start")
@@ -296,20 +289,20 @@ else:
             sc1, sc2, sc3 = st.columns(3)
             with sc1:
                 # Param
-                start_v = st.number_input("Start V", value=st.session_state.iv_start, key="iv_start", on_change=update_iv_start)
-                stop_v = st.number_input("Stop V", value=st.session_state.iv_stop, key="iv_stop", on_change=update_iv_stop)
-                num_steps = st.number_input("Number of Points", value=st.session_state.iv_steps, min_value=2, step=1, key="iv_steps", on_change=update_iv_steps)
+                st.number_input("Start Voltage (V)", key="iv_start", on_change=update_setting, args=("iv_start",))
+                st.number_input("Stop Voltage (V)", key="iv_stop", on_change=update_setting, args=("iv_stop",))
+                st.number_input("Number of Points", min_value=2, step=1, key="iv_steps", on_change=update_setting, args=("iv_steps",))
             with sc2:
                 # Modes
                 sweep_mode_opts = ["Linear", "Log"]
-                sweep_mode = st.selectbox("Spacing", sweep_mode_opts, index=sweep_mode_opts.index(st.session_state.iv_mode), key="iv_mode", on_change=update_iv_mode)
+                st.selectbox("Spacing", sweep_mode_opts, key="iv_mode", on_change=update_setting, args=("iv_mode",))
                 sweep_dir_opts = ["Single", "Double"]
-                sweep_dir = st.selectbox("Direction", sweep_dir_opts, index=sweep_dir_opts.index(st.session_state.iv_direction), key="iv_direction", on_change=update_iv_dir)
+                st.selectbox("Direction", sweep_dir_opts, key="iv_direction", on_change=update_setting, args=("iv_direction",))
                 nplc_opts = [0.01, 0.1, 1.0, 10.0]
-                nplc = st.selectbox("Speed (NPLC)", nplc_opts, index=nplc_opts.index(st.session_state.get("iv_nplc", 1.0)), key="iv_nplc", on_change=update_iv_nplc)
+                st.selectbox("Speed (NPLC)", nplc_opts, key="iv_nplc", on_change=update_setting, args=("iv_nplc",))
             with sc3:
                 # Limits
-                sweep_comp = st.number_input("Compliance (A)", value=st.session_state.iv_compliance, format="%.1e", key="iv_compliance", on_change=update_iv_comp)
+                st.number_input("Compliance (A)", format="%.1e", key="iv_compliance", on_change=update_setting, args=("iv_compliance",))
                 
         run_sweep = st.button("Run Sweep", type="primary")
         

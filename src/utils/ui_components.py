@@ -9,69 +9,45 @@ def render_global_sidebar(settings):
     """
     st.sidebar.header("⚙️ Global Device Config")
     st.sidebar.info("These settings apply to ALL measurements.")
-    
-    # --- Initialization Step ---
-    # Ensure all variables exist in session state to avoid AttributeErrors during persistence
-    if 'global_amp_type' not in st.session_state:
-        st.session_state.global_amp_type = settings.get("global_amp_type", "Passive Resistor")
-    if 'global_resistor_val' not in st.session_state:
-        st.session_state.global_resistor_val = settings.get("global_resistor_val", 1000.0)
-    if 'global_tia_gain' not in st.session_state:
-        st.session_state.global_tia_gain = settings.get("global_tia_gain", 1e9)
-    if 'global_safety_max_v' not in st.session_state:
-        st.session_state.global_safety_max_v = settings.get("global_safety_max_v", 9.5)
-    if 'pref_suppress_info' not in st.session_state:
-        st.session_state.pref_suppress_info = settings.get("suppress_info_logs", True)
 
-    # --- UI Components ---
-    amp_type = st.sidebar.radio("Amplifier/TIA Type", ["Passive Resistor", "FEMTO TIA"], 
-                        index=0 if st.session_state.global_amp_type == "Passive Resistor" else 1)
-    st.session_state.global_amp_type = amp_type
+    # --- Initialization Step ---
+    def init_pref(key, setting_key=None, default=None):
+        if setting_key is None: setting_key = key
+        if key not in st.session_state:
+            st.session_state[key] = settings.get(setting_key, default)
+
+    init_pref("global_amp_type", default="Passive Resistor")
+    init_pref("global_resistor_val", default=1000.0)
+    init_pref("global_tia_gain", default=1e9)
+    init_pref("global_safety_max_v", default=9.5)
+    init_pref("suppress_info_logs", default=True)
+    init_pref("last_led_wavelength", default=461.0)
     
-    if amp_type == "FEMTO TIA":
-        femto_gains = {
-            "10^3 (1k)": 1e3, "10^4 (10k)": 1e4, "10^5 (100k)": 1e5, 
-            "10^6 (1M)": 1e6, "10^7 (10M)": 1e7, "10^8 (100M)": 1e8, 
-            "10^9 (1G)": 1e9, "10^10 (10G)": 1e10, "10^11 (100G)": 1e11
-        }
-        curr_gain = st.session_state.global_tia_gain
-        curr_idx = 0
-        keys = list(femto_gains.keys())
-        for i, k in enumerate(keys):
-            if femto_gains[k] == curr_gain:
-                curr_idx = i
-                break
-        
-        sel_gain_key = st.sidebar.selectbox("TIA Gain (V/A)", keys, index=curr_idx)
-        st.session_state.global_tia_gain = femto_gains[sel_gain_key]
-        
-        st.session_state.global_safety_max_v = st.sidebar.number_input("Safety Guardrail (V)", 
-                                                               value=st.session_state.global_safety_max_v, 
-                                                               min_value=1.0, max_value=10.0)
+    # --- UI Components ---
+    st.sidebar.radio("Amplifier/TIA Type", ["Passive Resistor", "FEMTO TIA"], 
+                     key="global_amp_type", on_change=update_setting_cb, args=(settings, "global_amp_type"))
+    
+    if st.session_state.global_amp_type == "FEMTO TIA":
+        # ...
+        st.sidebar.number_input("Safety Guardrail (V)", min_value=1.0, max_value=10.0, step=0.1,
+                               key="global_safety_max_v", on_change=update_setting_cb, args=(settings, "global_safety_max_v"))
         st.sidebar.warning("⚠️ Verify TIA hardware settings match this selection!")
         
     else:
-        r_val = st.sidebar.number_input("Load Resistor (Ω)", value=st.session_state.global_resistor_val, format="%.2f")
-        st.session_state.global_resistor_val = r_val
+        st.sidebar.number_input("Load Resistor (Ω)", format="%.2f", 
+                               key="global_resistor_val", on_change=update_setting_cb, args=(settings, "global_resistor_val"))
         st.session_state.global_safety_max_v = 10.0
         
     st.sidebar.divider()
     
-    # Log Level Control
-        
-    suppress_logs = st.sidebar.checkbox("Suppress INFO Logs", value=st.session_state.pref_suppress_info, 
-                               help="Hide verbose green INFO messages in the log window.")
+    st.sidebar.number_input("LED Wavelength (nm)", min_value=100.0, max_value=2000.0, step=0.1,
+                          key="last_led_wavelength", on_change=update_setting_cb, args=(settings, "last_led_wavelength"))
     
-    # Check change and persist
-    if suppress_logs != st.session_state.pref_suppress_info:
-        st.session_state.pref_suppress_info = suppress_logs
-        settings.set("suppress_info_logs", suppress_logs)
-        st.toast(f"Log Level Updated: {'Suppressed' if suppress_logs else 'Verbose'}")
+    st.sidebar.divider()
+    
+    st.sidebar.checkbox("Suppress INFO Logs", key="suppress_info_logs", on_change=update_setting_cb, args=(settings, "suppress_info_logs"),
+                       help="Hide verbose green INFO messages in the log window.")
 
-    # Persist Amp settings on change
-    settings.save_settings({
-        "global_amp_type": st.session_state.global_amp_type,
-        "global_resistor_val": st.session_state.global_resistor_val,
-        "global_tia_gain": st.session_state.global_tia_gain,
-        "global_safety_max_v": st.session_state.global_safety_max_v
-    })
+def update_setting_cb(settings, key):
+    if key in st.session_state:
+        settings.set(key, st.session_state[key])
