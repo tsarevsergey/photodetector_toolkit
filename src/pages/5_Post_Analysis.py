@@ -7,6 +7,7 @@ import sys
 import os
 import glob
 from scipy import signal
+from scipy.interpolate import interp1d
 
 # Imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -22,6 +23,27 @@ st.title("📊 Post-Processing & Analysis")
 # Tabs for different analysis modes
 tab_cal, tab_ldr, tab_trace = st.tabs(["1. LED Calibration", "2. LDR Analysis", "3. Trace Analysis"])
 
+# --- Global File Discovery ---
+# File Filtering Option (Global, impacts Cal/LDR tabs)
+hide_traces = st.checkbox("🔍 Hide 'trace_step' files (raw data)", value=True, help="Omit files with 'trace_step' in the name (usually huge raw trace files not suitable for calibration).")
+
+# Recursive Discovery
+all_files = glob.glob("data/**/*.csv", recursive=True) + glob.glob("*.csv")
+all_files = sorted(list(set([os.path.normpath(f) for f in all_files])))
+
+if hide_traces:
+    data_files = [f for f in all_files if "trace_step" not in f.lower()]
+else:
+    data_files = all_files
+
+def get_index(path, options):
+    if not path: return 0
+    norm_path = os.path.normpath(path)
+    try:
+        return options.index(norm_path)
+    except ValueError:
+        return 0
+
 # --- TAB 1: CALIBRATION GENERATOR ---
 with tab_cal:
     st.header("Generate LED Power Calibration")
@@ -31,16 +53,35 @@ with tab_cal:
     **Formula:** $P_{opt} = I_{ref} / R_{ref}(\lambda)$
     """)
     
+    
+    # Persistence Loading
+    last_ref = settings.get("last_ref_file")
+    last_meas = settings.get("last_meas_file")
+    
     c1, c2 = st.columns(2)
     
     with c1:
         st.subheader("1. Reference Diode Data")
-        data_files = glob.glob("data/*.csv") + glob.glob("*.csv")
-        ref_file = st.selectbox("Reference Responsivity File (Wavelength vs A/W)", options=data_files, index=0 if data_files else None, key='an_cal_ref_sel')
+        ref_file = st.selectbox("Reference Responsivity File (Wavelength vs A/W)", 
+                                options=data_files, 
+                                index=get_index(last_ref, data_files), 
+                                key='an_cal_ref_sel')
+        if ref_file != last_ref:
+            settings.set("last_ref_file", ref_file)
         
     with c2:
-         st.subheader("2. LED Measurement")
-         meas_file = st.selectbox("Reference Measurement File (LED Current vs Photocurrent)", options=data_files, index=0 if data_files else None, key='an_cal_meas_sel')
+         st.subheader("2. Source Measurements")
+         num_cal = st.number_input("Number of Calibration Curves", min_value=1, max_value=10, value=1)
+         
+         cal_entries = []
+         for i in range(num_cal):
+             cc1, cc2 = st.columns([3, 1])
+             with cc1:
+                 # Keyed selection to allow different files per row
+                 row_file = st.selectbox(f"File {i+1}", options=data_files, key=f"cal_file_{i}")
+             with cc2:
+                 row_od = st.number_input(f"OD {i+1}", min_value=0.0, max_value=10.0, step=0.1, value=0.0, key=f"cal_od_{i}")
+             cal_entries.append({'file': row_file, 'od': row_od})
          
     st.subheader("3. Settings")
     c_set1, c_set2 = st.columns(2)
@@ -50,39 +91,52 @@ with tab_cal:
         ref_area = st.number_input("Reference Diode Active Area (cm²)", value=1.0, format="%.4f")
     
     if st.button("Generate Calibration Curve", type="primary"):
-        if not ref_file or not meas_file:
+        if not ref_file or not any(e['file'] for e in cal_entries):
             st.error("Please select valid files.")
         else:
             try:
                 cal_mgr = CalibrationManager()
-                df_cal, r_val = cal_mgr.generate_led_calibration(meas_file, ref_file, cal_wl)
+                df_cal, r_val, segment_fits = cal_mgr.generate_multi_led_calibration(cal_entries, ref_file, cal_wl)
                 
-                # Fit Power Law
-                A, B, r2 = cal_mgr.fit_led_power_law(df_cal)
+                # Fit Global Power Law (for generic comparison on SOURCE power)
+                temp_global = df_cal[['LED_Current_A', 'Source_Power_W']].rename(columns={'Source_Power_W': 'Optical_Power_W'})
+                A_glob, B_glob, r2_glob = cal_mgr.fit_led_power_law(temp_global)
                 
                 # Store in session state for other tabs
                 st.session_state.active_calibration = df_cal
-                st.session_state.active_calibration_meta = {'wl': cal_wl, 'r_ref': r_val, 'fit_A': A, 'fit_B': B, 'fit_r2': r2, 'ref_area': ref_area}
+                st.session_state.active_calibration_meta = {
+                    'wl': cal_wl, 'r_ref': r_val, 
+                    'fit_A_glob': A_glob, 'fit_B_glob': B_glob, 'fit_r2_glob': r2_glob, 
+                    'ref_area': ref_area,
+                    'segment_fits': segment_fits
+                }
                 
                 st.success(f"Calibration Generated! R_ref({cal_wl}nm) = {r_val:.4f} A/W")
-                st.info(f"**Power Model (Extrapolation Enabled):** $P_{{opt}} = {A:.4e} \\cdot I_{{LED}}^{{{B:.4f}}}$ ($R^2={r2:.4f}$)")
+                st.info(f"**Global Source Power Model (OD 0):** $P_{{source}} = {A_glob:.4e} \\cdot I_{{LED}}^{{{B_glob:.4f}}}$ ($R^2={r2_glob:.4f}$)")
                 
-                # Plot with Fit
-                x_fit = np.logspace(np.log10(df_cal['LED_Current_A'].min()), np.log10(df_cal['LED_Current_A'].max()), 100)
-                y_fit = A * (x_fit**B)
-                
-                fig = px.scatter(df_cal, x="LED_Current_A", y="Optical_Power_W", 
+                # Plot RAW curves
+                fig = px.scatter(df_cal, x="LED_Current_A", y="Measured_Power_W", 
+                                 color="Source_Segment" if "Source_Segment" in df_cal.columns else None,
                                  log_x=True, log_y=True,
-                                 title="LED Calibration Curve: Power vs Current")
-                fig.add_trace(go.Scatter(x=x_fit, y=y_fit, mode='lines', name=f'Power Law Fit', line=dict(dash='dash')))
+                                 title="Individual LED Calibration Curves (Measured at Diode)")
+                
+                # Add individual fits
+                for seg_id, fit in segment_fits.items():
+                    seg_data = df_cal[df_cal['Source_Segment'] == seg_id]
+                    x_f = np.geomspace(seg_data['LED_Current_A'].min(), seg_data['LED_Current_A'].max(), 50)
+                    y_f = fit['A_meas'] * (x_f ** fit['B'])
+                    fig.add_trace(go.Scatter(x=x_f, y=y_f, mode='lines', name=f'Seg {seg_id} (OD {fit["od"]}) Fit'))
                 
                 st.plotly_chart(fig, use_container_width=True)
                 
                 # Show Data
+                df_cal['Photocurrent_Density_A_cm2'] = df_cal['Photocurrent_A'].abs() / ref_area
                 st.dataframe(df_cal.style.format({
                     "LED_Current_A": "{:.2e}",
-                    "Optical_Power_W": "{:.2e}",
-                    "Photocurrent_A": "{:.2e}"
+                    "Photocurrent_A": "{:.2e}",
+                    "Photocurrent_Density_A_cm2": "{:.2e}",
+                    "Measured_Power_W": "{:.2e}",
+                    "Source_Power_W": "{:.2e}"
                 }))
                 
             except Exception as e:
@@ -98,178 +152,248 @@ with tab_ldr:
         st.success(f"Using Calibration (WL={st.session_state.active_calibration_meta['wl']}nm)")
     
     st.subheader("Load DUT Data")
-    # File selector for DUT data
-    c_dut1, c_dut2 = st.columns(2)
-    with c_dut1:
-         dut_file = st.selectbox("Select LDR Measurement File", options=data_files, key='an_dut_sel')
-    with c_dut2:
-         dev_area = st.number_input("Device Active Area (cm²)", value=1.0, format="%.4f")
+    c_dut_set, c_dut_area, c_dut_mode = st.columns([1, 1, 1])
+    with c_dut_set:
+        num_dut = st.number_input("Number of DUT Measurements", min_value=1, max_value=12, value=1)
+    with c_dut_area:
+        dev_area = st.number_input("Device Active Area (cm²)", value=1.0, format="%.4f")
+    with c_dut_mode:
+        map_mode = st.radio("Calibration Mapping Mode", options=["Interpolation", "Power Law Fit"], index=0, help="Interpolation ensures perfect consistency for measured points. Power Law Fit is better for noisy data or extrapolation.")
+    
+    st.divider()
+    dut_entries = []
+    has_cal = 'active_calibration_meta' in st.session_state
+    
+    for i in range(num_dut):
+        cd1, cd2, cd3 = st.columns([3, 1, 1])
+        with cd1:
+            row_file = st.selectbox(f"DUT File {i+1}", options=data_files, key=f"dut_file_{i}")
+        with cd2:
+            row_od = st.number_input(f"DUT OD {i+1}", min_value=0.0, max_value=10.0, step=0.1, value=0.0, key=f"dut_od_{i}")
+        with cd3:
+            if has_cal:
+                seg_opts = list(st.session_state.active_calibration_meta.get('segment_fits', {}).keys())
+                row_seg = st.selectbox(f"Cal Match {i+1}", options=seg_opts, key=f"dut_seg_{i}", help="Choose which calibration run this measurement matches.")
+            else:
+                row_seg = 1
+        dut_entries.append({'file': row_file, 'od': row_od, 'cal_seg': row_seg})
     
     if st.button("Analyze LDR Data"):
-        if not dut_file:
-            st.error("No file selected.")
+        if not any(e['file'] for e in dut_entries):
+            st.error("No files selected.")
         else:
             try:
-                df_raw = pd.read_csv(dut_file)
-                
-                # --- DATA CLEANING ---
-                # 1. Sort by File Index (Time) to ensure 'last' is 'latest'
-                
-                # 2. Group by Control Variable (LED_Current_A)
-                if 'LED_Current_A' not in df_raw.columns:
-                     st.error("Column 'LED_Current_A' missing.")
-                     st.stop()
-                     
-                unique_currents = df_raw['LED_Current_A'].unique()
-                cleaned_rows = []
-                
-                groups = df_raw.groupby('LED_Current_A')
-                
-                for amp, group in groups:
-                    selected_row = None
-                    # Logic: Prioritize OK
-                    if 'SNR_Status' in group.columns:
-                        mask_ok = group['SNR_Status'].astype(str).str.contains('OK|High|Good', case=False, na=False)
-                        ok_group = group[mask_ok]
-                        if not ok_group.empty:
-                            selected_row = ok_group.iloc[-1] # Latest OK
+                all_dut_dfs = []
+                for entry_idx, entry in enumerate(dut_entries):
+                    dut_file = entry['file']
+                    dut_od = entry['od']
+                    if not dut_file or not os.path.exists(dut_file): continue
+                    
+                    df_raw = pd.read_csv(dut_file)
+                    
+                    # --- DATA CLEANING ---
+                    if 'LED_Current_A' not in df_raw.columns: continue
+                         
+                    groups = df_raw.groupby('LED_Current_A')
+                    cleaned_rows = []
+                    for amp, group in groups:
+                        selected_row = None
+                        if 'SNR_Status' in group.columns:
+                            mask_ok = group['SNR_Status'].astype(str).str.contains('OK|High|Good', case=False, na=False)
+                            ok_group = group[mask_ok]
+                            selected_row = ok_group.iloc[-1] if not ok_group.empty else group.iloc[-1]
                         else:
-                            selected_row = group.iloc[-1] # Latest
-                    else:
-                        selected_row = group.iloc[-1] # Latest
+                            selected_row = group.iloc[-1]
+                        cleaned_rows.append(selected_row)
                         
-                    cleaned_rows.append(selected_row)
+                    df_segment = pd.DataFrame(cleaned_rows).reset_index(drop=True)
+                    df_segment['DUT_Segment'] = f"Meas {entry_idx + 1} (OD {dut_od})"
+                    df_segment['DUT_OD'] = dut_od
                     
-                df_dut = pd.DataFrame(cleaned_rows).reset_index(drop=True)
+                    # Calculate Current Density (J)
+                    df_segment['Current_Density_A_cm2'] = df_segment['Photocurrent_A'] / dev_area
+                    
+                    # Apply Calibration
+                    if 'active_calibration_meta' in st.session_state:
+                        meta = st.session_state.active_calibration_meta
+                        ref_area_val = meta.get('ref_area', 1.0)
+                        cal_seg = entry.get('cal_seg', 1)
+                        
+                        if map_mode == "Interpolation" and 'segment_fits' in meta and cal_seg in meta['segment_fits']:
+                            seg_info = meta['segment_fits'][cal_seg]
+                            cal_od = seg_info['od']
+                            c_cal = np.array(seg_info['currents'])
+                            p_cal = np.array(seg_info['powers'])
+                            A_extrap = seg_info['A_meas']
+                            B_extrap = seg_info['B']
+                            
+                            # Hybrid Logic: Interpolate in range, Fit out of range
+                            c_min, c_max = c_cal.min(), c_cal.max()
+                            dut_currents = df_segment['LED_Current_A'].values
+                            p_meas_at_cal = np.zeros_like(dut_currents)
+                            
+                            # Pre-create log-log interpolator for inner range
+                            # Filter out non-positives to avoid log errors
+                            v_mask = (c_cal > 0) & (p_cal > 0)
+                            if v_mask.any():
+                                f_log = interp1d(np.log10(c_cal[v_mask]), np.log10(p_cal[v_mask]), 
+                                                kind='linear', fill_value='extrapolate')
+                                
+                                for idx, I in enumerate(dut_currents):
+                                    if I <= 0:
+                                        p_meas_at_cal[idx] = 0.0
+                                    elif I >= c_min and I <= c_max:
+                                        # Use log-log interpolation
+                                        p_meas_at_cal[idx] = 10**float(f_log(np.log10(I)))
+                                    else:
+                                        # Use Power Law Extrapolation
+                                        p_meas_at_cal[idx] = A_extrap * (I ** B_extrap)
+                            else:
+                                # Fallback to fit only
+                                p_meas_at_cal = A_extrap * (dut_currents.clip(min=0) ** B_extrap)
+                                
+                            p_dut = p_meas_at_cal * (10**(cal_od - dut_od)) * (dev_area / ref_area_val)
+                            
+                            # Si Reference Density (at this LED current, through the filter)
+                            # Current = Power * Responsivity
+                            df_segment['Si_Photocurrent_Density_A_cm2'] = (p_meas_at_cal * meta.get('r_ref', 1.0)) / ref_area_val
+                        
+                        else:
+                            # Use Global or Segment-specific Fit (Power Law Only)
+                            A_fit, B_fit = meta.get('fit_A_glob', 0), meta.get('fit_B_glob', 1)
+                            cal_od = 0.0
+                            
+                            if 'segment_fits' in meta and cal_seg in meta['segment_fits']:
+                                A_fit = meta['segment_fits'][cal_seg]['A_meas']
+                                B_fit = meta['segment_fits'][cal_seg]['B']
+                                cal_od = meta['segment_fits'][cal_seg]['od']
+                            
+                            p_meas_at_cal = A_fit * (df_segment['LED_Current_A'].values.clip(min=0) ** B_fit)
+                            p_dut = p_meas_at_cal * (10**(cal_od - dut_od)) * (dev_area / ref_area_val)
+                            
+                            # Si Reference Density
+                            df_segment['Si_Photocurrent_Density_A_cm2'] = (p_meas_at_cal * meta.get('r_ref', 1.0)) / ref_area_val
+                        
+                        df_segment['Optical_Power_W'] = p_dut
+                    
+                    all_dut_dfs.append(df_segment)
                 
-                # Sort Highest Power first (Descending Current)
-                df_dut = df_dut.sort_values(by='LED_Current_A', ascending=False)
-                
-                st.write(f"Processed {len(df_raw)} raw points -> {len(df_dut)} unique steps.")
-                
-                # Validate columns
-                if 'Photocurrent_A' not in df_dut.columns:
-                    st.error("File must contain 'LED_Current_A' and 'Photocurrent_A' columns.")
+                if not all_dut_dfs:
+                    st.error("No valid data processed.")
                     st.stop()
-                
-                # Calculate Current Density (J)
-                df_dut['Current_Density_A_cm2'] = df_dut['Photocurrent_A'] / dev_area
                     
-                # Apply Calibration
+                df_dut = pd.concat(all_dut_dfs).sort_values(by='Optical_Power_W', ascending=False).reset_index(drop=True)
+                st.info(f"Stitched {len(all_dut_dfs)} curves into a master dataset with {len(df_dut)} unique points.")
                 if 'active_calibration_meta' in st.session_state:
-                    meta = st.session_state.active_calibration_meta
+                    # --- LINEARITY FIT (Log-Log) ---
+                    valid_log = (df_dut['Optical_Power_W'] > 0) & (df_dut['Photocurrent_A'].abs() > 0)
+                    df_log = df_dut[valid_log].copy()
                     
-                    # Use Fitted Model
-                    if 'fit_A' in meta and meta.get('fit_r2', 0) > 0.9:
-                        A, B = meta['fit_A'], meta['fit_B']
-                        p_opt_ref = A * (df_dut['LED_Current_A'] ** B)
-                        st.caption(f"Using Fitted Power Model: $P_{{Ref}} = {A:.2e} \\cdot I^{{{B:.3f}}}$")
-                    else:
-                        cal_df = st.session_state.active_calibration
-                        cal_df = cal_df.sort_values('LED_Current_A')
-                        p_opt_ref = np.interp(df_dut['LED_Current_A'], cal_df['LED_Current_A'], cal_df['Optical_Power_W'])
-                        st.warning("Using Linear Interpolation (No Extrapolation)")
-                    
-                    # SCALE by Area Ratio (P_dut = P_ref * (A_dut / A_ref))
-                    ref_area_val = meta.get('ref_area', 1.0)
-                    area_ratio = dev_area / ref_area_val
-                    
-                    p_opt = p_opt_ref * area_ratio
-                    # st.info(f"Applying Area Scaling: A_dut ({dev_area}) / A_ref ({ref_area_val}) = {area_ratio:.2f}")
-                    
-                    df_dut['Optical_Power_W'] = p_opt
-                    
-                    # Calculate Sensitivity (SNR=3)
-                    if 'SNR_FFT' in df_dut.columns:
-                         # P_min = P_meas * (3 / SNR)
-                        df_dut['Sensitivity_W_SNR3'] = df_dut.apply(lambda r: r['Optical_Power_W'] * (3.0 / r['SNR_FFT']) if r['SNR_FFT'] > 0 else np.nan, axis=1)
+                    if len(df_log) >= 2:
+                        lx = np.log10(df_log['Optical_Power_W'].values)
+                        ly = np.log10(df_log['Photocurrent_A'].abs().values)
+                        alpha, c_log = np.polyfit(lx, ly, 1) # Log-log slope
                         
-                    # Fit Slope
-                    # Fit Slope for J vs P (Responsivity Density?)
-                    # Model: J = R_dens * P (intercept 0)
-                    # slope = sum(x*y)/sum(x^2)
-                    x_fit_data = df_dut['Optical_Power_W'].values
-                    y_fit_data = df_dut['Current_Density_A_cm2'].abs().values
-                    
-                    slope_dens = np.sum(x_fit_data * y_fit_data) / np.sum(x_fit_data**2)
-                    intercept = 0.0
-                    r2 = 0.0 # simple placeholder or calc if needed
-                    
-                    # --- CALC: NEP ---
-                    # NEP (W/rtHz) = Noise Current Density (A/rtHz) / Responsivity (A/W)
-                    # We need Global Responsivity (A/W), not Density yet.
-                    # R_global (A/W) = Slope (A/W/cm2) * Area (cm2)?
-                    # OR we just fit I vs P directly.
-                    # Let's fit I vs P directly for R_global to be safe.
-                    
-                    x_fit_I = df_dut['Optical_Power_W'].values
-                    y_fit_I = df_dut['Photocurrent_A'].abs().values
-                    slope_global = np.sum(x_fit_I * y_fit_I) / np.sum(x_fit_I**2)
-                    
-                    if slope_global > 0:
-                         # Ensure we have Resistance info
-                         if 'Resistance_Ohms' in df_dut.columns and 'Noise_Density_V_rtHz' in df_dut.columns:
-                             df_dut['Current_Noise_Dens_A_rtHz'] = df_dut['Noise_Density_V_rtHz'] / df_dut['Resistance_Ohms']
-                             df_dut['NEP_W_rtHz'] = df_dut['Current_Noise_Dens_A_rtHz'] / slope_global
-                         else:
-                             df_dut['NEP_W_rtHz'] = np.nan
-                    else:
-                         df_dut['NEP_W_rtHz'] = np.nan
+                        # --- DYNAMIC RANGE (dB) ---
+                        p_max, p_min = df_log['Optical_Power_W'].max(), df_log['Optical_Power_W'].min()
+                        dr_db = 10 * np.log10(p_max / p_min)
+                        
+                        # --- RESULTS METRICS ---
+                        k1, k2, k3, k4 = st.columns(4)
+                        k1.metric("Linearity Slope (α)", f"{alpha:.4f}", help="Ideal slope is 1.0 (I proportional to P).")
+                        k2.metric("Dyn. Range", f"{dr_db:.1f} dB", help="10 * log10(Pmax / Pmin)")
+                        
+                        # Global Responsivity (Linear fit)
+                        x_lin = df_log['Optical_Power_W'].values
+                        y_lin = df_log['Photocurrent_A'].abs().values
+                        slope_r = np.sum(x_lin * y_lin) / np.sum(x_lin**2)
+                        k3.metric("Avg Responsivity", f"{slope_r:.4f} A/W")
+                        
+                        # --- NEP & DETECTIVITY ANALYSIS ---
+                        # NEP = Noise_Current / Responsivity
+                        # D* = sqrt(Area) / NEP
+                        if 'Noise_Density_V_rtHz' in df_dut.columns and 'Resistance_Ohms' in df_dut.columns:
+                             df_dut['Current_Noise_A_rtHz'] = df_dut['Noise_Density_V_rtHz'] / df_dut['Resistance_Ohms']
+                             df_dut['NEP_W_rtHz'] = df_dut['Current_Noise_A_rtHz'] / slope_r
+                             df_dut['Detectivity_Jones'] = np.sqrt(dev_area) / df_dut['NEP_W_rtHz']
+                             
+                             min_nep_hz = df_dut['NEP_W_rtHz'].min()
+                             max_dstar = df_dut['Detectivity_Jones'].max()
+                             
+                             k4.metric("Best NEP (rtHz)", f"{min_nep_hz:.2e} W/√Hz")
+                             # We need more columns if we want to show both, for now let's add D* to k4 or add k5
+                        else:
+                             # Fallback to Sensitivity from sweep (SNR=3)
+                             min_nep = np.nan
+                             if 'Sensitivity_W_SNR3' in df_log.columns:
+                                  min_nep = df_log['Sensitivity_W_SNR3'].min()
+                             k4.metric("Best NEP (SNR=3)", f"{min_nep:.2e} W")
+                             max_dstar = np.nan
 
-                    # --- REPORT ---
-                    k1, k2, k3, k4 = st.columns(4)
-                    k1.metric("Responsivity", f"{slope_dens:.4f} A/W/cm²") 
-                    k2.metric("Abs. Responsivity", f"{slope_global:.4f} A/W")
-                    k3.metric("Linearity (Fit)", "Power Law") 
-                    
-                    min_nep = df_dut['NEP_W_rtHz'].min() if 'NEP_W_rtHz' in df_dut.columns else 0
-                    k4.metric("Best NEP", f"{min_nep:.2e} W/√Hz")
-                    
-                    # --- PLOTS ---
-                    c_p1, c_p2 = st.columns(2)
-                    
-                    with c_p1:
-                        # LDR Plot with Fit (Using J)
-                        fig_ldr = px.scatter(df_dut, x="Optical_Power_W", y="Current_Density_A_cm2", 
-                                             log_x=True, log_y=True,
-                                             title=f"LDR: Current Density vs Optical Power (Area={dev_area} cm²)")
-                        # Use logspace for smooth line on log-log plot
-                        x_min = df_dut['Optical_Power_W'].min()
-                        x_max = df_dut['Optical_Power_W'].max()
-                        if x_min <= 0: x_min = 1e-12 
-                        x_range = np.geomspace(x_min, x_max, 100)
-                        y_fit = slope_dens * x_range # + intercept (0)
-                        fig_ldr.add_trace(go.Scatter(x=x_range, y=y_fit, mode='lines', name='Linear Fit', line=dict(dash='dash', color='red')))
-                        st.plotly_chart(fig_ldr, use_container_width=True)
+                        if 'Detectivity_Jones' in df_dut.columns:
+                            st.metric("Peak Detectivity (D*)", f"{max_dstar:.2e} Jones", help="D* = sqrt(Area) / NEP")
+
+                        # --- PLOTS ---
+                        c_p1, c_p2 = st.columns(2)
+                        with c_p1:
+                            fig_ldr = px.scatter(df_dut, x="Optical_Power_W", y="Photocurrent_A", 
+                                                 color="DUT_Segment",
+                                                 log_x=True, log_y=True,
+                                                 title="Stitched LDR: Photocurrent vs Power")
+                            
+                            # Add Common Fit Line
+                            x_fit = np.geomspace(df_dut['Optical_Power_W'].min(), df_dut['Optical_Power_W'].max(), 100)
+                            y_fit = (10**c_log) * (x_fit**alpha)
+                            fig_ldr.add_trace(go.Scatter(x=x_fit, y=y_fit, mode='lines', 
+                                                       name=f'Global Fit (α={alpha:.3f})',
+                                                       line=dict(dash='dash', color='magenta')))
+                            
+                            st.plotly_chart(fig_ldr, use_container_width=True)
+                            
+                        with c_p2:
+                             # Plot Linearity
+                             df_dut['Normalized_Responsivity'] = (df_dut['Photocurrent_A'].abs() / df_dut['Optical_Power_W']) / slope_r
+                             fig_lin = px.scatter(df_dut, x="Optical_Power_W", y="Normalized_Responsivity", 
+                                                 log_x=True, color="DUT_Segment",
+                                                 title="Linearity: R / <R>")
+                             fig_lin.add_hline(y=1.0, line_dash="dash", line_color="tomato")
+                             st.plotly_chart(fig_lin, use_container_width=True)
                         
-                    with c_p2:
-                        # Sensitivity / NEP Plot
-                        # Switch between NEP and Min Power? Default to NEP as requested.
-                        if 'NEP_W_rtHz' in df_dut.columns:
-                             # Filter valid
-                             df_nep = df_dut[df_dut['NEP_W_rtHz'] > 0]
-                             fig_nep = px.line(df_nep, x="Optical_Power_W", y="NEP_W_rtHz",
-                                               log_x=True, log_y=True,
-                                               title="NEP vs Optical Power",
-                                               labels={'NEP_W_rtHz': 'NEP (W/√Hz)', 'Optical_Power_W': 'Optical Power (W)'})
-                             st.plotly_chart(fig_nep, use_container_width=True)
+                        c_p3, c_p4 = st.columns(2)
+                        with c_p3:
+                            if 'NEP_W_rtHz' in df_dut.columns:
+                                fig_nep = px.scatter(df_dut, x="Optical_Power_W", y="NEP_W_rtHz",
+                                                     log_x=True, log_y=True, color="DUT_Segment",
+                                                     title="NEP vs Optical Power")
+                                st.plotly_chart(fig_nep, use_container_width=True)
+                        with c_p4:
+                            if 'Detectivity_Jones' in df_dut.columns:
+                                fig_dstar = px.scatter(df_dut, x="Optical_Power_W", y="Detectivity_Jones",
+                                                      log_x=True, log_y=True, color="DUT_Segment",
+                                                      title="Detectivity (D*) vs Optical Power")
+                                st.plotly_chart(fig_dstar, use_container_width=True)
+                             
+                        st.info(f"**LDR Model Fit:** $I_{{ph}} = {10**c_log:.2e} \\cdot P^{{{alpha:.3f}}}$")
                         
-                    st.dataframe(df_dut.style.format({
-                        "LED_Current_A": "{:.2e}",
-                        "Optical_Power_W": "{:.2e}",
-                        "Photocurrent_A": "{:.2e}",
-                        "Current_Density_A_cm2": "{:.2e}",
-                        "NEP_W_rtHz": "{:.2e}",
-                        "Sensitivity_W_SNR3": "{:.2e}",
-                        "SNR_Time": "{:.1f}",
-                        "Scope_Vpp": "{:.2e}"
-                    }, na_rep="-"))
-                    
+                        with st.expander("Combined Data Table"):
+                            st.dataframe(df_dut.style.format({
+                                "LED_Current_A": "{:.2e}",
+                                "Optical_Power_W": "{:.2e}",
+                                "Photocurrent_A": "{:.2e}",
+                                "Current_Density_A_cm2": "{:.2e}",
+                                "Si_Photocurrent_Density_A_cm2": "{:.2e}",
+                                "DUT_OD": "{:.1f}",
+                                "NEP_W_rtHz": "{:.2e}",
+                                "Detectivity_Jones": "{:.2e}",
+                                "Noise_Density_V_rtHz": "{:.2e}",
+                                "Resistance_Ohms": "{:.0f}"
+                            }, na_rep="-"))
+                    else:
+                        st.warning("Not enough data points for linearity fit.")
                 else:
-                    st.warning("No calibration active. Plotting raw Current Density.")
-                    fig = px.scatter(df_dut, x="LED_Current_A", y="Current_Density_A_cm2", log_x=True, log_y=True)
+                    st.warning("No calibration active. Plotting raw Photocurrent vs LED Current.")
+                    fig = px.scatter(df_dut, x="LED_Current_A", y="Photocurrent_A", color="DUT_Segment", log_x=True, log_y=True)
                     st.plotly_chart(fig)
-
             except Exception as e:
                 st.error(f"Analysis Failed: {e}")
 
@@ -278,13 +402,18 @@ with tab_trace:
     st.header("Raw Oscilloscope Trace Analysis")
     st.markdown("Load saved raw traces (`.csv`) to analyze Noise Spectral Density.")
     
-    # Trace Selection (Recursive find)
-    trace_files = glob.glob("data/**/*.csv", recursive=True) 
+    # Trace Selection (Using Global all_files)
+    last_trace = settings.get("last_trace_file")
     
-    if not trace_files:
+    if not all_files:
         st.warning("No CSV files found in 'data/' subfolders. Run a sweep with 'Save Raw Traces' enabled.")
     
-    trace_file = st.selectbox("Select Trace File", options=trace_files, key='trace_sel_box')
+    trace_file = st.selectbox("Select Trace File", 
+                              options=all_files, 
+                              index=get_index(last_trace, all_files),
+                              key='trace_sel_box')
+    if trace_file != last_trace:
+        settings.set("last_trace_file", trace_file)
     
     c_t1, c_t2 = st.columns(2)
     with c_t1:

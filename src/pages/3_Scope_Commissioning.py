@@ -6,6 +6,7 @@ import os
 import plotly.express as px
 import pandas as pd
 import numpy as np
+import datetime
 
 # Ensure we can import from parent directory
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -81,7 +82,7 @@ if scope.state == InstrumentState.ERROR:
     st.stop()
 
 # --- tabs ---
-config_tab, capture_tab, noise_tab = st.tabs(["Configuration", "Capture & View", "Noise Calibration"])
+config_tab, capture_tab, noise_tab, detect_tab = st.tabs(["Configuration", "Capture & View", "Noise Calibration", "Detectivity"])
 
 with config_tab:
     st.subheader("Channel Setup")
@@ -356,3 +357,160 @@ with noise_tab:
                 st.success("✅ Good Agreement (< 2x Thermal)")
             else:
                 st.warning("⚠️ High Excess Noise (> 2x). Check shielding/grounding.")
+
+with detect_tab:
+    st.header("Specific Detectivity ($D^*$) Calculator & Measurement")
+    st.markdown("""
+    Specific Detectivity ($D^*$) is a measure of the signal-to-noise performance of a photodetector, normalized for the device area.
+    $$D^* = \\frac{\\sqrt{A}}{NEP}$$
+    where $A$ is the active area and $NEP$ is the Noise Equivalent Power ($W/\\sqrt{Hz}$).
+    """)
+    
+    # --- SETUP & PARAMS ---
+    st.subheader("1. Device & TIA Parameters")
+    col1, col2 = st.columns(2)
+    with col1:
+        d_area = st.number_input("Active Area (cm²)", value=1.0, step=0.1, format="%.4f", key="det_area")
+        d_resp = st.number_input("Responsivity (A/W)", value=0.5, step=0.1, key="det_resp")
+    with col2:
+        d_gain = st.number_input("TIA Gain (V/A)", value=1e6, format="%.2e", key="det_gain")
+        d_input_mode = st.radio("Noise Source", ["Live Capture", "Manual Entry"], horizontal=True)
+
+    st.divider()
+    
+    # --- NOISE MEASUREMENT ---
+    st.subheader("2. Noise Measurement")
+    measured_v_noise = 0.0
+    
+    if d_input_mode == "Live Capture":
+        mcol1, mcol2, mcol3 = st.columns(3)
+        with mcol1:
+            det_range = st.selectbox("Scope Range", ['10MV', '20MV', '50MV', '100MV', '200MV', '500MV', '1V', '2V'], index=0, key="det_range")
+        with mcol2:
+            det_coupling = st.selectbox("Coupling", ["AC", "DC"], index=0, key="det_coup")
+        with mcol3:
+            det_duration = st.number_input("Duration (s)", value=1.0, step=0.5, key="det_dur")
+            
+        if st.button("Measure Detector Noise", type="primary", key="det_meas_btn"):
+            with st.spinner("Capturing Noise..."):
+                try:
+                    scope.configure_channel('A', True, det_range, det_coupling)
+                    fs = 100000.0
+                    num_samples = int(fs * det_duration)
+                    tb_idx = scope.calculate_timebase_index(det_duration, num_samples)
+                    t_vec, v_vec = scope.capture_block(tb_idx, num_samples)
+                    
+                    if len(t_vec) > 0:
+                        st.session_state.det_noise_data = {'t': t_vec, 'v': v_vec}
+                        st.rerun()
+                    else:
+                        st.error("Capture failed.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+                    
+        if 'det_noise_data' in st.session_state:
+            data = st.session_state.det_noise_data
+            from scipy.signal import welch
+            fs_actual = 1.0 / (data['t'][1] - data['t'][0])
+            f_psd, p_psd = welch(data['v'], fs_actual, nperseg=min(len(data['v']), 4096))
+            asd_v = np.sqrt(p_psd)
+            
+            # Band Selection
+            st.markdown("---")
+            st.write("### Analysis Band")
+            b1, b2 = st.columns(2)
+            with b1:
+                f_s = st.number_input("Start Freq (Hz)", value=10.0, step=10.0, key="det_f1")
+            with b2:
+                f_e = st.number_input("End Freq (Hz)", value=1000.0, step=100.0, key="det_f2")
+                
+            df_psd = pd.DataFrame({'Freq (Hz)': f_psd, 'Voltage Noise (V/rtHz)': asd_v})
+            df_psd = df_psd[(df_psd['Freq (Hz)'] > 1) & (df_psd['Freq (Hz)'] < fs_actual/2.1)]
+            
+            fig_psd = px.line(df_psd, x='Freq (Hz)', y='Voltage Noise (V/rtHz)', log_x=True, log_y=True, title="Detector Noise PSD")
+            fig_psd.add_vrect(x0=f_s, x1=f_e, fillcolor="rgba(0,100,255,0.1)", line_width=1, annotation_text="Selected Band")
+            st.plotly_chart(fig_psd, use_container_width=True)
+            
+            # Extract Value
+            mask = (df_psd['Freq (Hz)'] >= f_s) & (df_psd['Freq (Hz)'] <= f_e)
+            if mask.any():
+                measured_v_noise = df_psd[mask]['Voltage Noise (V/rtHz)'].median()
+                st.info(f"Representative Noise (Median in band): **{measured_v_noise*1e6:.2f} µV/√Hz**")
+    else:
+        # Manual Entry
+        measured_v_noise = st.number_input("Voltage Noise Density (V/√Hz)", value=1e-6, format="%.2e", key="det_manual_v")
+            
+    st.divider()
+    
+    # --- D* RESULTS ---
+    st.subheader("3. Final Detectivity")
+    
+    # Calculations
+    d_i_noise = measured_v_noise / d_gain if d_gain > 0 else 0
+    nep = d_i_noise / d_resp if d_resp > 0 else 0
+    d_star = np.sqrt(d_area) / nep if nep > 0 else 0
+    
+    res1, res2, res3 = st.columns(3)
+    res1.metric("Measured Current Noise", f"{d_i_noise*1e12:.2f} pA/√Hz")
+    res2.metric("NEP", f"{nep:.2e} W/√Hz")
+    res3.metric("Detectivity (D*)", f"{d_star:.2e} Jones")
+    
+    if d_star > 1e12:
+        st.success("✨ High Detectivity (> 10¹² Jones). Excellent performance.")
+    elif d_star > 1e10:
+        st.info("ℹ️ Moderate Detectivity. Typical for many commercial detectors.")
+    elif d_star > 0:
+        st.warning("⚠️ Low Detectivity. Check noise floor and responsivity.")
+
+    st.divider()
+    st.subheader("4. Export Data")
+    exp_name = st.text_input("Experiment Name", value="Detectivity_Run_1")
+    
+    if st.button("💾 Export Measurement Data", use_container_width=True):
+        if 'det_noise_data' not in st.session_state:
+            st.error("No measurement data to export. Please 'Measure Detector Noise' first.")
+        else:
+            try:
+                # Prepare Metadata
+                meta = {
+                    'Timestamp': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    'Active_Area_cm2': d_area,
+                    'Responsivity_AW': d_resp,
+                    'TIA_Gain_VA': d_gain,
+                    'Scope_Range': det_range if d_input_mode == "Live Capture" else "N/A",
+                    'Coupling': det_coupling if d_input_mode == "Live Capture" else "N/A",
+                    'Duration_s': det_duration if d_input_mode == "Live Capture" else "N/A",
+                    'Band_Start_Hz': f_s if d_input_mode == "Live Capture" else "N/A",
+                    'Band_End_Hz': f_e if d_input_mode == "Live Capture" else "N/A",
+                    'D_Star_Jones': f"{d_star:.2e}",
+                    'NEP_W_rtHz': f"{nep:.2e}",
+                    'Current_Noise_A_rtHz': f"{d_i_noise:.2e}",
+                    'Analysis_Mode': d_input_mode
+                }
+                
+                # Paths
+                base_dir = "data/commissioning"
+                os.makedirs(base_dir, exist_ok=True)
+                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                
+                # 1. Raw Trace
+                raw_path = os.path.join(base_dir, f"{exp_name}_{ts}_raw.csv")
+                df_raw = pd.DataFrame({'time': st.session_state.det_noise_data['t'], 'voltage': st.session_state.det_noise_data['v']})
+                
+                # 2. FFT Spectrum
+                fft_path = os.path.join(base_dir, f"{exp_name}_{ts}_fft.csv")
+                df_fft = pd.DataFrame({'freq_hz': f_psd, 'voltage_noise_V_rtHz': asd_v})
+                
+                def save_csv_with_meta(path, df, metadata):
+                    with open(path, 'w') as f:
+                        for k, v in metadata.items():
+                            f.write(f"# {k}: {v}\n")
+                        df.to_csv(f, index=False)
+                
+                save_csv_with_meta(raw_path, df_raw, meta)
+                save_csv_with_meta(fft_path, df_fft, meta)
+                
+                st.success(f"Successfully exported to:\n- {raw_path}\n- {fft_path}")
+                
+            except Exception as e:
+                st.error(f"Export failed: {e}")
