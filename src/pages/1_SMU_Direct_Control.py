@@ -26,6 +26,33 @@ if 'is_connected' not in st.session_state:
 if 'smu_log' not in st.session_state:
     st.session_state.smu_log = []
 
+# Init Session State from Settings if missing
+def init_pref(key, setting_key=None):
+    if setting_key is None: setting_key = key
+    if key not in st.session_state:
+        st.session_state[key] = settings.get(setting_key)
+
+# Helper to save settings
+def save_setting(key, value):
+    settings.set(key, value)
+
+def update_iv_start(): save_setting("iv_start", st.session_state.iv_start)
+def update_iv_stop(): save_setting("iv_stop", st.session_state.iv_stop)
+def update_iv_steps(): save_setting("iv_steps", st.session_state.iv_steps)
+def update_iv_mode(): save_setting("iv_mode", st.session_state.iv_mode)
+def update_iv_dir(): save_setting("iv_direction", st.session_state.iv_direction)
+def update_iv_nplc(): save_setting("iv_nplc", st.session_state.iv_nplc)
+def update_iv_comp(): save_setting("iv_compliance", st.session_state.iv_compliance)
+
+# Initialize prefs
+init_pref("iv_start")
+init_pref("iv_stop")
+init_pref("iv_steps")
+init_pref("iv_mode")
+init_pref("iv_direction")
+init_pref("iv_nplc")
+init_pref("iv_compliance")
+
 def log(msg):
     ts = time.strftime("%H:%M:%S")
     st.session_state.smu_log.append(f"[{ts}] {msg}")
@@ -269,17 +296,20 @@ else:
             sc1, sc2, sc3 = st.columns(3)
             with sc1:
                 # Param
-                start_v = st.number_input("Start V", value=-1.0)
-                stop_v = st.number_input("Stop V", value=1.0)
-                num_steps = st.number_input("Number of Points", value=21, min_value=2, step=1)
+                start_v = st.number_input("Start V", value=st.session_state.iv_start, key="iv_start", on_change=update_iv_start)
+                stop_v = st.number_input("Stop V", value=st.session_state.iv_stop, key="iv_stop", on_change=update_iv_stop)
+                num_steps = st.number_input("Number of Points", value=st.session_state.iv_steps, min_value=2, step=1, key="iv_steps", on_change=update_iv_steps)
             with sc2:
                 # Modes
-                sweep_mode = st.selectbox("Spacing", ["Linear", "Log"])
-                sweep_dir = st.selectbox("Direction", ["Single", "Double"])
-                nplc = st.selectbox("Speed (NPLC)", [0.01, 0.1, 1.0, 10.0], index=2)
+                sweep_mode_opts = ["Linear", "Log"]
+                sweep_mode = st.selectbox("Spacing", sweep_mode_opts, index=sweep_mode_opts.index(st.session_state.iv_mode), key="iv_mode", on_change=update_iv_mode)
+                sweep_dir_opts = ["Single", "Double"]
+                sweep_dir = st.selectbox("Direction", sweep_dir_opts, index=sweep_dir_opts.index(st.session_state.iv_direction), key="iv_direction", on_change=update_iv_dir)
+                nplc_opts = [0.01, 0.1, 1.0, 10.0]
+                nplc = st.selectbox("Speed (NPLC)", nplc_opts, index=nplc_opts.index(st.session_state.get("iv_nplc", 1.0)), key="iv_nplc", on_change=update_iv_nplc)
             with sc3:
                 # Limits
-                sweep_comp = st.number_input("Compliance (A)", value=0.01, format="%.1e")
+                sweep_comp = st.number_input("Compliance (A)", value=st.session_state.iv_compliance, format="%.1e", key="iv_compliance", on_change=update_iv_comp)
                 
         run_sweep = st.button("Run Sweep", type="primary")
         

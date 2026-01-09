@@ -26,6 +26,41 @@ if 'scope' not in st.session_state:
 if 'scope_connected' not in st.session_state:
     st.session_state.scope_connected = False
 
+# Init Session State from Settings if missing
+def init_pref(key, setting_key=None):
+    if setting_key is None: setting_key = key
+    if key not in st.session_state:
+        st.session_state[key] = settings.get(setting_key)
+
+# Helper to save settings
+def save_setting(key, value):
+    settings.set(key, value)
+
+def update_ch_a_en(): save_setting("scope_ch_a_enabled", st.session_state.scope_ch_a_enabled)
+def update_ch_a_range(): save_setting("scope_ch_a_range", st.session_state.scope_ch_a_range)
+def update_ch_a_coup(): save_setting("scope_ch_a_coupling", st.session_state.scope_ch_a_coupling)
+def update_ch_b_en(): save_setting("scope_ch_b_enabled", st.session_state.scope_ch_b_enabled)
+def update_ch_b_range(): save_setting("scope_ch_b_range", st.session_state.scope_ch_b_range)
+def update_ch_b_coup(): save_setting("scope_ch_b_coupling", st.session_state.scope_ch_b_coupling)
+def update_acq_mode(): save_setting("scope_acq_mode", st.session_state.scope_acq_mode)
+def update_block_dur(): save_setting("scope_block_duration_ms", st.session_state.scope_block_duration_ms)
+def update_stream_dur(): save_setting("scope_streaming_duration_s", st.session_state.scope_streaming_duration_s)
+def update_samples(): save_setting("scope_num_samples", st.session_state.scope_num_samples)
+def update_rate(): save_setting("scope_sample_rate", st.session_state.scope_sample_rate)
+
+# Initialize all prefs
+init_pref("scope_ch_a_enabled")
+init_pref("scope_ch_a_range")
+init_pref("scope_ch_a_coupling")
+init_pref("scope_ch_b_enabled")
+init_pref("scope_ch_b_range")
+init_pref("scope_ch_b_coupling")
+init_pref("scope_acq_mode")
+init_pref("scope_block_duration_ms")
+init_pref("scope_streaming_duration_s")
+init_pref("scope_num_samples")
+init_pref("scope_sample_rate")
+
 # --- Context ---
 # We keep the SMU session alive if possible, but this page focuses on Scope.
 
@@ -92,9 +127,14 @@ with config_tab:
     
     with c1:
         st.markdown("### Channel A")
-        en_a = st.checkbox("Enable Ch A", value=True)
-        range_a = st.selectbox("Range A", ranges, index=7) # 2V default
-        coup_a = st.selectbox("Coupling A", ["DC", "AC"], index=0)
+        range_opts = ranges
+        range_idx = range_opts.index(st.session_state.scope_ch_a_range)
+        coup_opts = ["DC", "AC"]
+        coup_idx = coup_opts.index(st.session_state.scope_ch_a_coupling)
+        
+        en_a = st.checkbox("Enable Ch A", value=st.session_state.scope_ch_a_enabled, key="scope_ch_a_enabled", on_change=update_ch_a_en)
+        range_a = st.selectbox("Range A", range_opts, index=range_idx, key="scope_ch_a_range", on_change=update_ch_a_range)
+        coup_a = st.selectbox("Coupling A", coup_opts, index=coup_idx, key="scope_ch_a_coupling", on_change=update_ch_a_coup)
         
         if st.button("Apply Ch A"):
             scope.configure_channel('A', en_a, range_a, coup_a)
@@ -102,9 +142,12 @@ with config_tab:
             
     with c2:
         st.markdown("### Channel B")
-        en_b = st.checkbox("Enable Ch B", value=False)
-        range_b = st.selectbox("Range B", ranges, index=7)
-        coup_b = st.selectbox("Coupling B", ["DC", "AC"], index=0)
+        range_idx_b = range_opts.index(st.session_state.scope_ch_b_range)
+        coup_idx_b = coup_opts.index(st.session_state.scope_ch_b_coupling)
+        
+        en_b = st.checkbox("Enable Ch B", value=st.session_state.scope_ch_b_enabled, key="scope_ch_b_enabled", on_change=update_ch_b_en)
+        range_b = st.selectbox("Range B", range_opts, index=range_idx_b, key="scope_ch_b_range", on_change=update_ch_b_range)
+        coup_b = st.selectbox("Coupling B", coup_opts, index=coup_idx_b, key="scope_ch_b_coupling", on_change=update_ch_b_coup)
         
         if st.button("Apply Ch B"):
             scope.configure_channel('B', en_b, range_b, coup_b)
@@ -117,23 +160,25 @@ with capture_tab:
     c_mode, c_dur = st.columns(2)
     
     with c_mode:
-        acq_mode = st.radio("Acquisition Mode", ["Block", "Streaming"], index=0, help="Block: Short, high speed. Streaming: Long, continuous.")
+        acq_mode_opts = ["Block", "Streaming"]
+        acq_mode_idx = acq_mode_opts.index(st.session_state.scope_acq_mode)
+        acq_mode = st.radio("Acquisition Mode", acq_mode_opts, index=acq_mode_idx, key="scope_acq_mode", on_change=update_acq_mode, help="Block: Short, high speed. Streaming: Long, continuous.")
         
     with c_dur:
         if acq_mode == "Block":
-            duration_ms = st.number_input("Duration (ms)", value=20.0, min_value=0.1, max_value=5000.0, step=10.0)
+            duration_ms = st.number_input("Duration (ms)", value=st.session_state.scope_block_duration_ms, min_value=0.1, max_value=5000.0, step=10.0, key="scope_block_duration_ms", on_change=update_block_dur)
             duration_s = duration_ms / 1000.0
         else:
-            duration_s = st.number_input("Duration (s)", value=2.0, min_value=0.1, max_value=100.0, step=0.5)
+            duration_s = st.number_input("Duration (s)", value=st.session_state.scope_streaming_duration_s, min_value=0.1, max_value=100.0, step=0.5, key="scope_streaming_duration_s", on_change=update_stream_dur)
 
     # 2. Resolution Settings
     c_res1, c_res2 = st.columns(2)
     
     with c_res1:
         if acq_mode == "Block":
-            num_samples = st.number_input("Number of Samples", value=2000, min_value=100, max_value=20000)
+            num_samples = st.number_input("Number of Samples", value=st.session_state.scope_num_samples, min_value=100, max_value=20000, key="scope_num_samples", on_change=update_samples)
         else:
-            sample_rate = st.number_input("Sample Rate (Hz)", value=100000.0, min_value=1000.0, max_value=1000000.0, step=10000.0)
+            sample_rate = st.number_input("Sample Rate (Hz)", value=st.session_state.scope_sample_rate, min_value=1000.0, max_value=1000000.0, step=10000.0, key="scope_sample_rate", on_change=update_rate)
             
     with c_res2:
         if scope and st.session_state.scope_connected:

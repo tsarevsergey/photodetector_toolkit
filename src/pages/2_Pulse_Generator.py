@@ -56,6 +56,48 @@ if st.session_state.get('global_amp_type') == 'FEMTO TIA':
         st.error("🛑 Operations Locked. Please confirm TIA safety above.")
         st.stop()
 
+# Init Session State from Settings if missing
+def init_pref(key, setting_key=None):
+    if setting_key is None: setting_key = key
+    if key not in st.session_state:
+        st.session_state[key] = settings.get(setting_key)
+
+# Helper to save settings
+def save_setting(key, value):
+    settings.set(key, value)
+
+def update_pulse_mode(): save_setting("pulse_mode", st.session_state.pulse_mode)
+def update_pulse_high(): save_setting("pulse_high", st.session_state.pulse_high)
+def update_pulse_low(): save_setting("pulse_low", st.session_state.pulse_low)
+def update_pulse_comp(): save_setting("pulse_compliance", st.session_state.pulse_compliance)
+def update_pulse_freq(): save_setting("pulse_freq", st.session_state.pulse_freq)
+def update_pulse_duty(): save_setting("pulse_duty", st.session_state.pulse_duty / 100.0)
+def update_pulse_cycles(): save_setting("pulse_cycles", st.session_state.pulse_cycles)
+def update_pulse_resistor(): save_setting("pulse_measure_resistor", st.session_state.pulse_measure_resistor)
+def update_pulse_range(): save_setting("pulse_scope_range", st.session_state.pulse_scope_range)
+def update_pulse_duration(): save_setting("pulse_duration", st.session_state.pulse_duration)
+def update_pulse_samples(): save_setting("pulse_samples", st.session_state.pulse_samples)
+def update_pulse_ac(): save_setting("pulse_ac_coupling", st.session_state.pulse_ac_coupling)
+def update_pulse_delay(): save_setting("pulse_delay_cycles", st.session_state.pulse_delay_cycles)
+def update_sample_name(): save_setting("sample_name", st.session_state.sample_name)
+
+# Initialize all prefs
+init_pref("pulse_mode")
+init_pref("pulse_high")
+init_pref("pulse_low")
+init_pref("pulse_compliance")
+init_pref("pulse_freq")
+init_pref("duty_cycle_perc", "pulse_duty")
+if "duty_cycle_perc" in st.session_state and st.session_state.duty_cycle_perc <= 1.0:
+    st.session_state.duty_cycle_perc = int(st.session_state.duty_cycle_perc * 100)
+init_pref("pulse_cycles")
+init_pref("pulse_measure_resistor")
+init_pref("pulse_scope_range")
+init_pref("pulse_duration")
+init_pref("pulse_samples")
+init_pref("pulse_ac_coupling")
+init_pref("pulse_delay_cycles")
+
 import plotly.graph_objects as go
 import numpy as np
 
@@ -116,7 +158,7 @@ with tab_pulse:
         
         with col_p1:
             st.markdown("**Levels**")
-            pulse_mode = st.selectbox("Pulse Mode", ["Current", "Voltage"])
+            pulse_mode = st.selectbox("Pulse Mode", ["Current", "Voltage"], key="pulse_mode", on_change=update_pulse_mode)
             mode_str = "CURR" if pulse_mode == "Current" else "VOLT"
             
             # SAFETY LIMITS (LED Protection)
@@ -125,22 +167,27 @@ with tab_pulse:
             MAX_VOLT_V = 9.0
             
             if mode_str == 'CURR':
-                high_val = st.number_input(f"High Level (A) [Max {MAX_CURR_A}]", value=1e-3, max_value=MAX_CURR_A, format="%.6e")
-                low_val = st.number_input(f"Low Level (A)", value=0.0, max_value=MAX_CURR_A, format="%.6e")
-                comp_val = st.number_input(f"Compliance (V) [Max {MAX_VOLT_V}]", value=8.0, max_value=MAX_VOLT_V)
+                high_val = st.number_input(f"High Level (A) [Max {MAX_CURR_A}]", value=st.session_state.pulse_high, max_value=MAX_CURR_A, format="%.6e", key="pulse_high", on_change=update_pulse_high)
+                low_val = st.number_input(f"Low Level (A)", value=st.session_state.pulse_low, max_value=MAX_CURR_A, format="%.6e", key="pulse_low", on_change=update_pulse_low)
+                comp_val = st.number_input(f"Compliance (V) [Max {MAX_VOLT_V}]", value=st.session_state.pulse_compliance, max_value=MAX_VOLT_V, key="pulse_compliance", on_change=update_pulse_comp)
             else:
-                high_val = st.number_input(f"High Level (V) [Max {MAX_VOLT_V}]", value=1.0, max_value=MAX_VOLT_V, format="%.6e")
-                low_val = st.number_input(f"Low Level (V)", value=0.0, max_value=MAX_VOLT_V, format="%.6e")
-                comp_val = st.number_input(f"Compliance (A) [Max {MAX_CURR_A}]", value=0.01, max_value=MAX_CURR_A)
+                high_val = st.number_input(f"High Level (V) [Max {MAX_VOLT_V}]", value=st.session_state.pulse_high, max_value=MAX_VOLT_V, format="%.6e", key="pulse_high", on_change=update_pulse_high)
+                low_val = st.number_input(f"Low Level (V)", value=st.session_state.pulse_low, max_value=MAX_VOLT_V, format="%.6e", key="pulse_low", on_change=update_pulse_low)
+                comp_val = st.number_input(f"Compliance (A) [Max {MAX_CURR_A}]", value=st.session_state.pulse_compliance, max_value=MAX_CURR_A, key="pulse_compliance", on_change=update_pulse_comp)
 
         with col_p2:
             st.markdown("**Timing**")
-            freq = st.number_input("Frequency (Hz)", value=10.0, min_value=0.001, max_value=1000.0)
+            freq = st.number_input("Frequency (Hz)", value=st.session_state.pulse_freq, min_value=0.001, max_value=1000.0, key="pulse_freq", on_change=update_pulse_freq)
             period = 1.0 / freq
             st.caption(f"Period: {period*1000:.2f} ms")
             
-            duty = st.slider("Duty Cycle (%)", 1, 99, 50) / 100.0
-            cycles = st.number_input("Cycles (0 = Infinite)", value=100, min_value=0)
+            duty_perc = st.slider("Duty Cycle (%)", 1, 99, value=int(st.session_state.duty_cycle_perc), key="pulse_duty", on_change=update_pulse_duty)
+            duty = duty_perc / 100.0
+            cycles = st.number_input("Cycles (0 = Infinite)", value=st.session_state.pulse_cycles, min_value=0, key="pulse_cycles", on_change=update_pulse_cycles)
+        
+        st.divider()
+        st.subheader("Sample Information")
+        sample_name = st.text_input("Sample Name / ID", value=st.session_state.sample_name, key='sample_name', on_change=update_sample_name)
         
         # Preview
         st.plotly_chart(preview_pulse_train(high_val, low_val, period, duty), use_container_width=True)
@@ -166,7 +213,7 @@ with tab_pulse:
             
             enable_scope = st.checkbox("Enable Measurement", value=True)
             if enable_scope:
-                resistor = st.number_input("Resistor (Ω)", value=47000)
+                resistor = st.number_input("Resistor (Ω)", value=st.session_state.pulse_measure_resistor, key="pulse_measure_resistor", on_change=update_pulse_resistor)
                 # Auto-calc scope setting
                 # Ensure we capture at least 3 periods or 50ms
                 min_dur = max(3 * period, 0.05)
@@ -241,17 +288,23 @@ with tab_pulse:
         c_sc1, c_sc2, c_sc3, c_sc4 = st.columns(4)
         with c_sc1:
              # Default 10V as per LDR workflow
-             scope_range = st.selectbox("Scope Range", ["10V", "5V", "2V", "1V", "500mV", "200mV"], index=0)
+             scope_range_options = ["10V", "5V", "2V", "1V", "500mV", "200mV"]
+             try:
+                 def_idx = scope_range_options.index(st.session_state.pulse_scope_range)
+             except:
+                 def_idx = 0
+             scope_range = st.selectbox("Scope Range", scope_range_options, index=def_idx, key="pulse_scope_range", on_change=update_pulse_range)
         with c_sc2:
              calc_dur = max(3 * period, 0.05)
-             override_dur = st.number_input("Capture Duration (s)", value=calc_dur, format="%.4f")
+             # Use persistent duration if it's reasonable, else use calculated
+             override_dur = st.number_input("Capture Duration (s)", value=st.session_state.pulse_duration, format="%.4f", key="pulse_duration", on_change=update_pulse_duration)
         with c_sc3:
-             pts = st.number_input("Samples", value=2000)
+             pts = st.number_input("Samples", value=st.session_state.pulse_samples, key="pulse_samples", on_change=update_pulse_samples)
         with c_sc4:
-             ac_coupling = st.checkbox("AC Coupling", value=False)
+             ac_coupling = st.checkbox("AC Coupling", value=st.session_state.pulse_ac_coupling, key="pulse_ac_coupling", on_change=update_pulse_ac)
         
         # New: Cycle Delay
-        delay_cycles = st.slider("Measurement Delay (Cycles)", 0, max(1, int(cycles)-1) if cycles>0 else 1000, 0, help="Delay capture by N cycles after trigger.")
+        delay_cycles = st.slider("Measurement Delay (Cycles)", 0, max(1, int(cycles)-1) if cycles>0 else 1000, value=int(st.session_state.pulse_delay_cycles), key="pulse_delay_cycles", on_change=update_pulse_delay, help="Delay capture by N cycles after trigger.")
 
         if st.button("🚀 Trigger & Measure Pulse", type="primary", use_container_width=True):
              try:

@@ -16,43 +16,33 @@ from analysis.calibration import CalibrationManager
 from utils.settings_manager import SettingsManager
 from utils.ui_components import render_global_sidebar
 
-# Initialize Settings
-settings = SettingsManager()
-
-# Init Session State from Settings if missing
-def init_pref(key, setting_key=None):
-    if setting_key is None: setting_key = key
-    if key not in st.session_state:
-        st.session_state[key] = settings.get(setting_key)
-
-init_pref("pref_base_folder", "base_save_folder")
-init_pref("pref_save_raw", "save_raw_traces")
-init_pref("pref_snr_threshold", "snr_threshold")
-init_pref("pref_min_cycles", "min_cycles")
-init_pref("pref_compliance", "led_compliance")
-init_pref("pref_averages", "averages")
-init_pref("sweep_resistor", "resistor")
-init_pref("sweep_start_i", "sweep_start")
-init_pref("sweep_stop_i", "sweep_stop")
-init_pref("sweep_steps", "sweep_steps")
-init_pref("sweep_delay_cycles", "capture_delay_cycles")
-init_pref("sweep_freq", "sweep_freq")
-init_pref("sweep_duty", "duty_cycle")
-init_pref("pref_scope_range_idx", "scope_range_idx")
-init_pref("pref_acq_mode", "acquisition_mode")
-init_pref("pref_duration", "capture_duration")
-init_pref("pref_sample_rate", "sample_rate")
-init_pref("pref_auto_range", "auto_range")
 init_pref("pref_ac_coupling", "ac_coupling")
+init_pref("sample_name", "sample_name")
 
 # Helper to save settings
 def save_setting(key, value):
     settings.set(key, value)
 
+def update_base_folder(): save_setting("base_save_folder", st.session_state.pref_base_folder)
+def update_save_raw(): save_setting("save_raw_traces", st.session_state.pref_save_raw)
+def update_snr_threshold(): save_setting("snr_threshold", st.session_state.pref_snr_threshold)
+def update_min_cycles(): save_setting("min_cycles", st.session_state.pref_min_cycles)
+def update_compliance(): save_setting("led_compliance", st.session_state.pref_compliance)
+def update_averages(): save_setting("averages", st.session_state.pref_averages)
+def update_resistor(): save_setting("resistor", st.session_state.sweep_resistor)
+def update_start_i(): save_setting("sweep_start", st.session_state.sweep_start_i)
+def update_stop_i(): save_setting("sweep_stop", st.session_state.sweep_stop_i)
+def update_steps(): save_setting("sweep_steps", st.session_state.sweep_steps)
+def update_delay_cycles(): save_setting("capture_delay_cycles", st.session_state.sweep_delay_cycles)
 def update_freq(): save_setting("sweep_freq", st.session_state.sweep_freq)
+def update_duty(): save_setting("duty_cycle", st.session_state.sweep_duty)
+def update_range(): save_setting("scope_range_idx", st.session_state.pref_scope_range_idx)
 def update_mode(): save_setting("acquisition_mode", st.session_state.pref_acq_mode)
 def update_duration(): save_setting("capture_duration", st.session_state.pref_duration)
 def update_rate(): save_setting("sample_rate", st.session_state.pref_sample_rate)
+def update_auto_range(): save_setting("auto_range", st.session_state.pref_auto_range)
+def update_ac_coupling(): save_setting("ac_coupling", st.session_state.pref_ac_coupling)
+def update_sample_name(): save_setting("sample_name", st.session_state.sample_name)
 
 st.set_page_config(page_title="LDR Measurement", layout="wide")
 render_global_sidebar(settings)
@@ -85,13 +75,13 @@ with tab_settings:
 
     st.divider()
     st.subheader("Data Saving")
-    st.session_state.pref_base_folder = st.text_input("Base Save Folder", value=st.session_state.pref_base_folder)
-    st.session_state.pref_save_raw = st.checkbox("Save Raw Traces (Oscilloscope Data)", value=st.session_state.pref_save_raw)
+    st.session_state.pref_base_folder = st.text_input("Base Save Folder", value=st.session_state.pref_base_folder, key="pref_base_folder_sync", on_change=update_base_folder)
+    st.session_state.pref_save_raw = st.checkbox("Save Raw Traces (Oscilloscope Data)", value=st.session_state.pref_save_raw, key="pref_save_raw_sync", on_change=update_save_raw)
     
     st.divider()
     st.subheader("Sweep Quality")
-    st.session_state.pref_snr_threshold = st.number_input("SNR Pause Threshold", value=st.session_state.pref_snr_threshold, min_value=1.0, max_value=1000.0, step=1.0)
-    st.number_input("Min Cycles per Step", value=st.session_state.pref_min_cycles, min_value=10, max_value=10000, key='pref_min_cycles')
+    st.session_state.pref_snr_threshold = st.number_input("SNR Pause Threshold", value=st.session_state.pref_snr_threshold, min_value=1.0, max_value=1000.0, step=1.0, key="pref_snr_threshold_sync", on_change=update_snr_threshold)
+    st.number_input("Min Cycles per Step", value=st.session_state.pref_min_cycles, min_value=10, max_value=10000, key='pref_min_cycles', on_change=update_min_cycles)
     
     st.divider()
     st.subheader("Acquisition Settings")
@@ -135,17 +125,16 @@ with tab_measure:
     c1, c2 = st.columns([1, 2])
     with c1:
         st.subheader("Sweep Parameters")
-        start_i = st.number_input("Start Current (A)", value=st.session_state.sweep_start_i, format="%.1e", min_value=1e-7, max_value=0.1, key='sweep_start_i')
-        stop_i = st.number_input("Stop Current (A)", value=st.session_state.sweep_stop_i, format="%.1e", min_value=1e-7, max_value=0.1, key='sweep_stop_i')
-        steps = st.number_input("Steps", value=st.session_state.sweep_steps, min_value=2, max_value=50, key='sweep_steps')
+        start_i = st.number_input("Start Current (A)", value=st.session_state.sweep_start_i, format="%.1e", min_value=1e-7, max_value=0.1, key='sweep_start_i', on_change=update_start_i)
+        stop_i = st.number_input("Stop Current (A)", value=st.session_state.sweep_stop_i, format="%.1e", min_value=1e-7, max_value=0.1, key='sweep_stop_i', on_change=update_stop_i)
+        steps = st.number_input("Steps", value=st.session_state.sweep_steps, min_value=2, max_value=50, key='sweep_steps', on_change=update_steps)
         st.divider()
         freq = st.number_input("Frequency (Hz)", value=st.session_state.sweep_freq, key='sweep_freq', on_change=update_freq)
-        duty = st.slider("Duty Cycle", 0.1, 0.9, value=st.session_state.sweep_duty, key='sweep_duty')
-        delay_cycles = st.number_input("Capture Delay (Cycles)", value=st.session_state.sweep_delay_cycles, min_value=0, max_value=1000, key='sweep_delay_cycles')
+        duty = st.slider("Duty Cycle (Fraction)", 0.1, 0.9, value=st.session_state.sweep_duty, key='sweep_duty', on_change=update_duty, help="0.5 = 50% duty cycle. SMU requires a fraction between 0.1 and 0.9.")
+        delay_cycles = st.number_input("Capture Delay (Cycles)", value=st.session_state.sweep_delay_cycles, min_value=0, max_value=1000, key='sweep_delay_cycles', on_change=update_delay_cycles)
         st.divider()
         st.subheader("Sample Information")
-        if 'sample_name' not in st.session_state: st.session_state.sample_name = "Sample_1"
-        sample_name = st.text_input("Sample Name / ID", value=st.session_state.sample_name, key='sample_name')
+        sample_name = st.text_input("Sample Name / ID", value=st.session_state.sample_name, key='sample_name', on_change=update_sample_name)
         enable_saving = st.checkbox("💾 Save Data During Measurement", value=st.session_state.get('enable_saving', True), key='enable_saving')
         st.divider()
         st.write("#### Amplifier Settings")
@@ -163,16 +152,16 @@ with tab_measure:
             new_r = st.number_input("Gain (Resistor) (Ω)", value=st.session_state.global_resistor_val, format="%.2f", key='ldr_resistor_local_sync')
             st.session_state.global_resistor_val = new_r
             r_val = new_r
-        voltage_limit = st.number_input("LED Compliance Voltage (V)", value=st.session_state.pref_compliance, min_value=1.0, max_value=20.0, step=0.5, key='w_compliance')
-        averages = st.number_input("Averages per Step", value=st.session_state.pref_averages, min_value=1, max_value=20, key='w_averages')
+        voltage_limit = st.number_input("LED Compliance Voltage (V)", value=st.session_state.pref_compliance, min_value=1.0, max_value=20.0, step=0.5, key='pref_compliance', on_change=update_compliance)
+        averages = st.number_input("Averages per Step", value=st.session_state.pref_averages, min_value=1, max_value=20, key='pref_averages', on_change=update_averages)
         scope_range_options = ["20mV", "50mV", "100mV", "200mV", "500mV", "1V", "2V", "5V", "10V"]
         idx = min(st.session_state.pref_scope_range_idx, len(scope_range_options)-1)
-        scope_range_val = st.selectbox("Start Scope Range", scope_range_options, index=idx, key='w_scope_range')
+        scope_range_val = st.selectbox("Start Scope Range", scope_range_options, index=idx, key='pref_scope_range_idx_widget', on_change=lambda: save_setting("scope_range_idx", scope_range_options.index(st.session_state.pref_scope_range_idx_widget)))
         c_scope1, c_scope2 = st.columns(2)
         with c_scope1:
-            auto_range = st.checkbox("Auto-Range", value=st.session_state.pref_auto_range, key='pref_auto_range')
+            auto_range = st.checkbox("Auto-Range", value=st.session_state.pref_auto_range, key='pref_auto_range', on_change=update_auto_range)
         with c_scope2:
-            ac_coupling = st.checkbox("AC Coupling", value=st.session_state.pref_ac_coupling, key='pref_ac_coupling')
+            ac_coupling = st.checkbox("AC Coupling", value=st.session_state.pref_ac_coupling, key='pref_ac_coupling', on_change=update_ac_coupling)
         st.divider()
         start_btn = st.button("Start Sweep", type="primary")
         if 'stop_btn_clicked' not in st.session_state: st.session_state.stop_btn_clicked = False
@@ -306,19 +295,26 @@ with tab_measure:
             slope, intercept, r2 = cal_mgr.fit_responsivity_slope(results)
             st.metric("Measured Responsivity (Slope)", f"{slope:.4f} A/W", f"R²={r2:.4f}")
 
-        x_axis = "Optical_Power_W" if 'Optical_Power_W' in results.columns else "LED_Current_A"
-        x_label = "Optical Power (W)" if 'Optical_Power_W' in results.columns else "LED Current (A)"
-        fig_ldr = px.scatter(results, x=x_axis, y="Photocurrent_A", log_x=True, log_y=True, 
-                             title=f"LDR: Photocurrent vs {x_label}", labels={x_axis: x_label, "Photocurrent_A": "Photocurrent (A)"})
-        if 'led_calibration' in st.session_state:
-             x_fit = np.linspace(results[x_axis].min(), results[x_axis].max(), 100)
-             import plotly.graph_objects as go
-             fig_ldr.add_trace(go.Scatter(x=x_fit, y=slope * x_fit + intercept, mode='lines', name=f'Fit ({slope:.2f} A/W)', line=dict(dash='dash')))
-        st.plotly_chart(fig_ldr, use_container_width=True)
-        
-        if 'led_calibration' in st.session_state:
-             fig_nep = px.line(results, x=x_axis, y="Sensitivity_W_SNR3", log_x=True, log_y=True, title="Sensitivity (Min Detectable Power @ SNR=3)")
-             st.plotly_chart(fig_nep, use_container_width=True)
+        if results.empty:
+            st.warning("No data points were captured in the last sweep. Check hardware connections or SNR settings.")
+        else:
+            x_axis = "Optical_Power_W" if 'Optical_Power_W' in results.columns else "LED_Current_A"
+            x_label = "Optical Power (W)" if 'Optical_Power_W' in results.columns else "LED Current (A)"
+            
+            if "Photocurrent_A" in results.columns:
+                fig_ldr = px.scatter(results, x=x_axis, y="Photocurrent_A", log_x=True, log_y=True, 
+                                     title=f"LDR: Photocurrent vs {x_label}", labels={x_axis: x_label, "Photocurrent_A": "Photocurrent (A)"})
+                if 'led_calibration' in st.session_state:
+                     valid_fit = results[x_axis].notna() & (results[x_axis] > 0)
+                     if valid_fit.any():
+                        x_fit = np.linspace(results[x_axis][valid_fit].min(), results[x_axis][valid_fit].max(), 100)
+                        import plotly.graph_objects as go
+                        fig_ldr.add_trace(go.Scatter(x=x_fit, y=slope * x_fit + intercept, mode='lines', name=f'Fit ({slope:.2f} A/W)', line=dict(dash='dash')))
+                st.plotly_chart(fig_ldr, use_container_width=True)
+            
+            if 'led_calibration' in st.session_state and 'Sensitivity_W_SNR3' in results.columns:
+                 fig_nep = px.line(results, x=x_axis, y="Sensitivity_W_SNR3", log_x=True, log_y=True, title="Sensitivity (Min Detectable Power @ SNR=3)")
+                 st.plotly_chart(fig_nep, use_container_width=True)
 
         if 'ldr_last_waveforms' in st.session_state:
              st.subheader("Waveform Viewer")
