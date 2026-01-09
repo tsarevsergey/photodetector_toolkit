@@ -22,6 +22,11 @@ DEFAULT_SETTINGS = {
     "sweep_freq": 40.0,
     "duty_cycle": 0.5,
     "acquisition_mode": "Block",
+    "global_amp_type": "Passive Resistor",
+    "global_resistor_val": 47000.0,
+    "global_tia_gain": 1e6,
+    "global_safety_max_v": 9.5,
+    "last_dut_file": "",
     "capture_duration": 0.5,
     "sample_rate": 100000.0,
     "scope_range_idx": 6, # 1V default
@@ -79,10 +84,27 @@ class SettingsManager:
             with open(self.config_file, 'r') as f:
                 data = json.load(f)
             # Merge with defaults to ensure all keys exist
-            return {**DEFAULT_SETTINGS, **data}
+            merged = {**DEFAULT_SETTINGS, **data}
+            return self._sanitize_settings(merged)
         except Exception as e:
             self.logger.error(f"Failed to load settings from {self.config_file}: {e}")
             return DEFAULT_SETTINGS.copy()
+
+    def _sanitize_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        """Fixes invalid values that might have been saved (e.g. 0.0 resistor)."""
+        # Fix Resistor 0.0
+        if settings.get("global_resistor_val", 0.0) <= 0:
+            settings["global_resistor_val"] = DEFAULT_SETTINGS["global_resistor_val"]
+        
+        # Fix TIA Gain 0.0
+        if settings.get("global_tia_gain", 0.0) <= 0:
+            settings["global_tia_gain"] = DEFAULT_SETTINGS["global_tia_gain"]
+            
+        # Fix Pulse Frequency 0.0
+        if settings.get("pulse_freq", 0.0) <= 0:
+            settings["pulse_freq"] = DEFAULT_SETTINGS["pulse_freq"]
+
+        return settings
 
     def save_settings(self, new_settings: Dict[str, Any]) -> None:
         """Updates and saves settings to JSON file."""

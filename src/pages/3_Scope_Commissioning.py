@@ -112,7 +112,7 @@ with config_tab:
     st.subheader("Channel Setup")
     col_a, col_b = st.columns(2)
     
-    ranges = ['20mV', '50mV', '100mV', '200mV', '500mV', '1V', '2V', '5V', '10V', '20V']
+    ranges = ['10mV', '20mV', '50mV', '100mV', '200mV', '500mV', '1V', '2V', '5V', '10V', '20V']
     
     with col_a:
         st.subheader("Channel A")
@@ -167,7 +167,8 @@ with capture_tab:
     with c_res2:
         if scope and st.session_state.scope_connected:
             if acq_mode == "Block":
-                st.metric("Effective Rate", f"{(num_samples/duration_s)/1000:.1f} kS/s")
+                tb_idx = scope.calculate_timebase_index(duration_ms / 1000.0, num_samples)
+                st.metric("Effective Rate", f"{(num_samples/(duration_ms/1000.0))/1000:.1f} kS/s")
                 st.caption(f"Timebase Index: {tb_idx}")
             else:
                 st.metric("Total Samples", f"{int(duration_s * sample_rate):,}")
@@ -179,7 +180,7 @@ with capture_tab:
     with qc1:
         quick_coup = st.selectbox("Coupling", ["DC", "AC"], index=0, key="quick_coup")
     with qc2:
-        quick_range = st.selectbox("Range", ['10MV', '20MV', '50MV', '100MV', '200MV', '500MV', '1V', '2V', '5V', '10V'], index=7, key="quick_range")
+        quick_range = st.selectbox("Range", ranges, index=ranges.index("2V"), key="quick_range")
     with qc3:
         tia_gain = st.number_input("TIA Gain (Ω)", value=1000.0, format="%.2e", help="Load Resistor or TIA Gain for noise conversion")
 

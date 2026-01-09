@@ -11,11 +11,10 @@ from hardware.smu_controller import SMUController, InstrumentState
 from utils.settings_manager import SettingsManager
 from utils.ui_components import render_global_sidebar
 
-st.set_page_config(page_title="SMU List Sweep / Pulse Generator", layout="wide")
+st.set_page_config(page_title="Pulse Generator", layout="wide")
 settings = SettingsManager()
-render_global_sidebar(settings)
-
-st.title("🌊 SMU List Sweep & Pulse Generator")
+render_global_sidebar(settings, hide_config=True) # Hide global controls
+st.title("⚡ LED Pulse Generator & Measurement")
 
 # --- Utils ---
 def render_status_banner(smu):
@@ -57,10 +56,10 @@ if st.session_state.get('global_amp_type') == 'FEMTO TIA':
         st.stop()
 
 # Init Session State from Settings if missing
-def init_pref(key, setting_key=None):
+def init_pref(key, setting_key=None, default=None):
     if setting_key is None: setting_key = key
     if key not in st.session_state:
-        st.session_state[key] = settings.get(setting_key)
+        st.session_state[key] = settings.get(setting_key, default)
 
 # Generic callback to save any setting from session_state
 def update_setting(key):
@@ -73,10 +72,17 @@ def update_pulse_duty():
         st.session_state.pulse_duty = fraction
         settings.set("pulse_duty", fraction)
 
-def update_tia_gain_pulse():
+def update_sample_name_local_pulse():
+    if "pulse_sample_name_local" in st.session_state:
+        val = st.session_state.pulse_sample_name_local
+        st.session_state.sample_name = val
+        settings.set("sample_name", val)
+
+def update_tia_gain_pulse_global():
     femto_gains = {"10^3 (1k)": 1e3, "10^4 (10k)": 1e4, "10^5 (100k)": 1e5, "10^6 (1M)": 1e6, "10^7 (10M)": 1e7, "10^8 (100M)": 1e8, "10^9 (1G)": 1e9, "10^10 (10G)": 1e10, "10^11 (100G)": 1e11}
-    if "pulse_tia_gain_local" in st.session_state:
-        val = femto_gains[st.session_state.pulse_tia_gain_local]
+    if "pulse_global_tia_gain_widget" in st.session_state:
+        val_str = st.session_state.pulse_global_tia_gain_widget
+        val = femto_gains[val_str]
         st.session_state.global_tia_gain = val
         settings.set("global_tia_gain", val)
 
@@ -94,7 +100,12 @@ init_pref("pulse_duration")
 init_pref("pulse_samples")
 init_pref("pulse_ac_coupling")
 init_pref("pulse_delay_cycles")
+init_pref("global_resistor_val") # Use global setting
+init_pref("global_amp_type") # Use global setting
+init_pref("global_tia_gain") # Use global setting
+init_pref("global_tia_gain") # Use global setting
 init_pref("sample_name")
+init_pref("pulse_sample_name_local", setting_key="sample_name", default="Sample_1")
 
 
 import plotly.graph_objects as go
@@ -186,7 +197,7 @@ with tab_pulse:
         
         st.divider()
         st.subheader("Sample Information")
-        st.text_input("Sample Name / ID", key='sample_name', on_change=update_setting, args=("sample_name",))
+        st.text_input("Sample Name / ID", key='pulse_sample_name_local', on_change=update_sample_name_local_pulse)
         
         # Preview
         st.plotly_chart(preview_pulse_train(st.session_state.pulse_high, st.session_state.pulse_low, period, duty), use_container_width=True)
@@ -212,14 +223,19 @@ with tab_pulse:
             enable_scope = True # Set enable_scope here if connected
             
             if enable_scope:
+                # Global amp type control
+                st.radio("Amplifier/TIA Type", ["Passive Resistor", "FEMTO TIA"], key="global_amp_type", on_change=update_setting, args=("global_amp_type",))
+                
                 current_type = st.session_state.global_amp_type
                 st.info(f"Amplifier Mode: **{current_type}**")
                 if current_type == "FEMTO TIA":
                     femto_gains = {"10^3 (1k)": 1e3, "10^4 (10k)": 1e4, "10^5 (100k)": 1e5, "10^6 (1M)": 1e6, "10^7 (10M)": 1e7, "10^8 (100M)": 1e8, "10^9 (1G)": 1e9, "10^10 (10G)": 1e10, "10^11 (100G)": 1e11}
                     curr_val = st.session_state.global_tia_gain
+
                     keys = list(femto_gains.keys())
                     def_idx = next((i for i, k in enumerate(keys) if femto_gains[k] == curr_val), 0)
-                    st.selectbox("TIA Gain (V/A)", keys, index=def_idx, key='pulse_tia_gain_local', on_change=update_tia_gain_pulse)
+                    
+                    st.selectbox("TIA Gain (V/A)", keys, index=def_idx, key='pulse_global_tia_gain_widget', on_change=update_tia_gain_pulse_global)
                 else:
                     st.number_input("Resistor (Ω)", key="global_resistor_val", on_change=update_setting, args=("global_resistor_val",))
                 

@@ -105,7 +105,7 @@ class ScopeController(BaseInstrumentController):
         
         # Valid ranges map
         ranges = {
-            '10ML': ps.PS2000A_RANGE['PS2000A_10MV'],
+            '10MV': ps.PS2000A_RANGE['PS2000A_10MV'],
             '20MV': ps.PS2000A_RANGE['PS2000A_20MV'],
             '50MV': ps.PS2000A_RANGE['PS2000A_50MV'],
             '100MV': ps.PS2000A_RANGE['PS2000A_100MV'],

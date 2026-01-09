@@ -20,10 +20,10 @@ from utils.ui_components import render_global_sidebar
 settings = SettingsManager()
 
 # Init Session State from Settings if missing
-def init_pref(key, setting_key=None):
+def init_pref(key, setting_key=None, default=None):
     if setting_key is None: setting_key = key
     if key not in st.session_state:
-        st.session_state[key] = settings.get(setting_key)
+        st.session_state[key] = settings.get(setting_key, default)
 
 init_pref("base_save_folder")
 init_pref("save_raw_traces")
@@ -45,7 +45,7 @@ init_pref("sample_rate")
 init_pref("auto_range")
 init_pref("ac_coupling")
 init_pref("sample_name")
-init_pref("suppress_info_logs")
+init_pref("ldr_sample_name_local", setting_key="sample_name", default="Sample_1")
 
 # Generic callback to save any setting from session_state
 def update_setting(key):
@@ -53,22 +53,35 @@ def update_setting(key):
         settings.set(key, st.session_state[key])
 
 def update_scope_range_idx():
-    options = ["20mV", "50mV", "100mV", "200mV", "500mV", "1V", "2V", "5V", "10V"]
+    options = ["10mV", "20mV", "50mV", "100mV", "200mV", "500mV", "1V", "2V", "5V", "10V", "20V"]
     if "scope_range_idx_widget" in st.session_state:
         val = st.session_state.scope_range_idx_widget
         idx = options.index(val)
         st.session_state.scope_range_idx = idx
         settings.set("scope_range_idx", idx)
 
-def update_tia_gain_local():
+def update_resistor_local():
+    if "ldr_resistor_local" in st.session_state:
+        val = st.session_state.ldr_resistor_local
+        st.session_state.global_resistor_val = val
+        settings.set("global_resistor_val", val)
+
+def update_sample_name_local():
+    if "ldr_sample_name_local" in st.session_state:
+        val = st.session_state.ldr_sample_name_local
+        st.session_state.sample_name = val
+        settings.set("sample_name", val)
+
+def update_tia_gain_global():
     femto_gains = {"10^3 (1k)": 1e3, "10^4 (10k)": 1e4, "10^5 (100k)": 1e5, "10^6 (1M)": 1e6, "10^7 (10M)": 1e7, "10^8 (100M)": 1e8, "10^9 (1G)": 1e9, "10^10 (10G)": 1e10, "10^11 (100G)": 1e11}
-    if "ldr_tia_gain_local" in st.session_state:
-        val = femto_gains[st.session_state.ldr_tia_gain_local]
+    if "global_tia_gain_widget" in st.session_state:
+        val_str = st.session_state.global_tia_gain_widget
+        val = femto_gains[val_str]
         st.session_state.global_tia_gain = val
         settings.set("global_tia_gain", val)
 
 st.set_page_config(page_title="LDR Measurement", layout="wide")
-render_global_sidebar(settings)
+render_global_sidebar(settings, hide_config=True) # Hide global controls to avoid duplicate keys
 st.title("📈 LDR Measurement (Linear Dynamic Range)")
 
 # --- Check Connections ---
@@ -88,7 +101,6 @@ tab_measure, tab_settings = st.tabs(["Measurement", "Settings"])
 
 with tab_settings:
     st.subheader("General Settings")
-    st.checkbox("Suppress INFO logs (Show only Warnings/Errors)", key="suppress_info_logs", on_change=update_setting, args=("suppress_info_logs",))
     
     # Apply logging level
     log_level = logging.WARNING if st.session_state.suppress_info_logs else logging.INFO
@@ -156,18 +168,24 @@ with tab_measure:
         st.number_input("Capture Delay (Cycles)", min_value=0, max_value=1000, key='capture_delay_cycles', on_change=update_setting, args=("capture_delay_cycles",))
         st.divider()
         st.subheader("Sample Information")
-        st.text_input("Sample Name / ID", key='sample_name', on_change=update_setting, args=("sample_name",))
+        st.text_input("Sample Name / ID", key='ldr_sample_name_local', on_change=update_sample_name_local)
         enable_saving = st.checkbox("💾 Save Data During Measurement", value=st.session_state.get('enable_saving', True), key='enable_saving')
         st.divider()
         st.write("#### Amplifier Settings")
+        # Global amp type control here since we hid sidebar version
+        st.radio("Amplifier/TIA Type", ["Passive Resistor", "FEMTO TIA"], key="global_amp_type", on_change=update_setting, args=("global_amp_type",))
+        
         current_type = st.session_state.global_amp_type
-        st.info(f"Amplifier Mode: **{current_type}** (Change in Sidebar)")
         if current_type == "FEMTO TIA":
             femto_gains = {"10^3 (1k)": 1e3, "10^4 (10k)": 1e4, "10^5 (100k)": 1e5, "10^6 (1M)": 1e6, "10^7 (10M)": 1e7, "10^8 (100M)": 1e8, "10^9 (1G)": 1e9, "10^10 (10G)": 1e10, "10^11 (100G)": 1e11}
             curr_val = st.session_state.global_tia_gain
+            
+            # Helper for selectbox index
             keys = list(femto_gains.keys())
             def_idx = next((i for i, k in enumerate(keys) if femto_gains[k] == curr_val), 0)
-            st.selectbox("TIA Gain (V/A)", keys, index=def_idx, key='ldr_tia_gain_local', on_change=update_tia_gain_local)
+            
+            st.selectbox("TIA Gain (V/A)", keys, index=def_idx, key='global_tia_gain_widget', on_change=update_tia_gain_global)
+            st.number_input("Safety Guardrail (V)", min_value=1.0, max_value=10.0, step=0.1, key='global_safety_max_v', on_change=update_setting, args=("global_safety_max_v",))
         else:
             st.number_input("Gain (Resistor) (Ω)", format="%.2f", key='global_resistor_val', on_change=update_setting, args=("global_resistor_val",))
         
