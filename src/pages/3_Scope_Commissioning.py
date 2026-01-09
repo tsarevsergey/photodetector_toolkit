@@ -27,10 +27,10 @@ if 'scope_connected' not in st.session_state:
     st.session_state.scope_connected = False
 
 # Init Session State from Settings if missing
-def init_pref(key, setting_key=None):
+def init_pref(key, setting_key=None, default=None):
     if setting_key is None: setting_key = key
     if key not in st.session_state:
-        st.session_state[key] = settings.get(setting_key)
+        st.session_state[key] = settings.get(setting_key, default)
 
 # Generic callback to save any setting from session_state
 def update_setting(key):
@@ -49,6 +49,33 @@ init_pref("scope_block_duration_ms")
 init_pref("scope_streaming_duration_s")
 init_pref("scope_num_samples")
 init_pref("scope_sample_rate")
+
+# Capture Tab Persist
+init_pref("com_quick_coupling", default="DC")
+init_pref("com_quick_range", default="2V")
+init_pref("com_quick_tia_gain", default=1000.0)
+
+# Noise Tab Persist
+init_pref("noise_source_r", default=1000.0)
+init_pref("noise_cal_gain", default=1000.0)
+init_pref("noise_cal_range", default="10MV")
+init_pref("noise_cal_coupling", default="AC")
+init_pref("noise_cal_duration", default=1.0)
+init_pref("noise_f_start", default=10.0)
+init_pref("noise_f_stop", default=10000.0)
+
+# Detectivity Tab Persist
+init_pref("det_area", default=1.0)
+init_pref("det_resp", default=0.5)
+init_pref("det_gain", default=1e6)
+init_pref("det_input_mode", default="Live Capture")
+init_pref("det_range", default="10MV")
+init_pref("det_coupling", default="AC")
+init_pref("det_duration", default=1.0)
+init_pref("det_f_start", default=10.0)
+init_pref("det_f_end", default=1000.0)
+init_pref("det_exp_name", default="Detectivity_Run_1")
+init_pref("det_manual_v", default=1e-6)
 
 # --- Context ---
 # We keep the SMU session alive if possible, but this page focuses on Scope.
@@ -178,11 +205,11 @@ with capture_tab:
     st.caption("Quick Overrides (Applied before capture)")
     qc1, qc2, qc3 = st.columns(3)
     with qc1:
-        quick_coup = st.selectbox("Coupling", ["DC", "AC"], index=0, key="quick_coup")
+        quick_coup = st.selectbox("Coupling", ["DC", "AC"], key="com_quick_coupling", on_change=update_setting, args=("com_quick_coupling",))
     with qc2:
-        quick_range = st.selectbox("Range", ranges, index=ranges.index("2V"), key="quick_range")
+        quick_range = st.selectbox("Range", ranges, key="com_quick_range", on_change=update_setting, args=("com_quick_range",))
     with qc3:
-        tia_gain = st.number_input("TIA Gain (Ω)", value=1000.0, format="%.2e", help="Load Resistor or TIA Gain for noise conversion")
+        tia_gain = st.number_input("TIA Gain (Ω)", format="%.2e", help="Load Resistor or TIA Gain for noise conversion", key="com_quick_tia_gain", on_change=update_setting, args=("com_quick_tia_gain",))
 
     if st.button("Start Capture", type="primary"):
         with st.spinner("Capturing..."):
@@ -271,15 +298,15 @@ with noise_tab:
     
     n1, n2, n3, n4, n5 = st.columns(5)
     with n1:
-        source_r_ohms = st.number_input("Source Resistor (Ω)", value=1000.0, format="%.2e", min_value=1.0)
+        source_r_ohms = st.number_input("Source Resistor (Ω)", format="%.2e", min_value=1.0, key="noise_source_r", on_change=update_setting, args=("noise_source_r",))
     with n2:
-        cal_gain = st.number_input("TIA Gain (V/A)", value=1000.0, format="%.2e", min_value=1.0)
+        cal_gain = st.number_input("TIA Gain (V/A)", format="%.2e", min_value=1.0, key="noise_cal_gain", on_change=update_setting, args=("noise_cal_gain",))
     with n3:
-        cal_range = st.selectbox("Scope Range", ['10MV', '20MV', '50MV', '100MV', '200MV', '500MV', '1V', '2V'], index=0, help="Use lowest range possible without clipping.")
+        cal_range = st.selectbox("Scope Range", ['10MV', '20MV', '50MV', '100MV', '200MV', '500MV', '1V', '2V'], help="Use lowest range possible without clipping.", key="noise_cal_range", on_change=update_setting, args=("noise_cal_range",))
     with n4:
-        cal_coupling = st.selectbox("Coupling", ["AC", "DC"], index=0)
+        cal_coupling = st.selectbox("Coupling", ["AC", "DC"], key="noise_cal_coupling", on_change=update_setting, args=("noise_cal_coupling",))
     with n5:
-        cal_duration = st.number_input("Cal Duration (s)", value=1.0, step=0.5)
+        cal_duration = st.number_input("Cal Duration (s)", step=0.5, key="noise_cal_duration", on_change=update_setting, args=("noise_cal_duration",))
 
     if st.button("Measure Noise Floor", type="primary"):
         with st.spinner("Measuring Noise..."):
@@ -360,9 +387,9 @@ with noise_tab:
         # Metrics (Interactive Band)
         c_b1, c_b2 = st.columns(2)
         with c_b1: 
-            f_start = st.number_input("Analysis Freq Start (Hz)", value=10.0, step=10.0)
+            f_start = st.number_input("Analysis Freq Start (Hz)", step=10.0, key="noise_f_start", on_change=update_setting, args=("noise_f_start",))
         with c_b2:
-            f_stop = st.number_input("Analysis Freq Stop (Hz)", value=100.0 if g_val > 1e9 else 10000.0, step=100.0)
+            f_stop = st.number_input("Analysis Freq Stop (Hz)", step=100.0, key="noise_f_stop", on_change=update_setting, args=("noise_f_stop",))
         
         mask = (df_cal['Freq (Hz)'] >= f_start) & (df_cal['Freq (Hz)'] <= f_stop)
         if mask.any():
@@ -399,11 +426,11 @@ with detect_tab:
     st.subheader("1. Device & TIA Parameters")
     col1, col2 = st.columns(2)
     with col1:
-        d_area = st.number_input("Active Area (cm²)", value=1.0, step=0.1, format="%.4f", key="det_area")
-        d_resp = st.number_input("Responsivity (A/W)", value=0.5, step=0.1, key="det_resp")
+        d_area = st.number_input("Active Area (cm²)", step=0.1, format="%.4f", key="det_area", on_change=update_setting, args=("det_area",))
+        d_resp = st.number_input("Responsivity (A/W)", step=0.1, key="det_resp", on_change=update_setting, args=("det_resp",))
     with col2:
-        d_gain = st.number_input("TIA Gain (V/A)", value=1e6, format="%.2e", key="det_gain")
-        d_input_mode = st.radio("Noise Source", ["Live Capture", "Manual Entry"], horizontal=True)
+        d_gain = st.number_input("TIA Gain (V/A)", format="%.2e", key="det_gain", on_change=update_setting, args=("det_gain",))
+        d_input_mode = st.radio("Noise Source", ["Live Capture", "Manual Entry"], horizontal=True, key="det_input_mode", on_change=update_setting, args=("det_input_mode",))
 
     st.divider()
     
@@ -414,11 +441,11 @@ with detect_tab:
     if d_input_mode == "Live Capture":
         mcol1, mcol2, mcol3 = st.columns(3)
         with mcol1:
-            det_range = st.selectbox("Scope Range", ['10MV', '20MV', '50MV', '100MV', '200MV', '500MV', '1V', '2V'], index=0, key="det_range")
+            det_range = st.selectbox("Scope Range", ['10MV', '20MV', '50MV', '100MV', '200MV', '500MV', '1V', '2V'], key="det_range", on_change=update_setting, args=("det_range",))
         with mcol2:
-            det_coupling = st.selectbox("Coupling", ["AC", "DC"], index=0, key="det_coup")
+            det_coupling = st.selectbox("Coupling", ["AC", "DC"], key="det_coupling", on_change=update_setting, args=("det_coupling",))
         with mcol3:
-            det_duration = st.number_input("Duration (s)", value=1.0, step=0.5, key="det_dur")
+            det_duration = st.number_input("Duration (s)", step=0.5, key="det_duration", on_change=update_setting, args=("det_duration",))
             
         if st.button("Measure Detector Noise", type="primary", key="det_meas_btn"):
             with st.spinner("Capturing Noise..."):
@@ -449,9 +476,9 @@ with detect_tab:
             st.write("### Analysis Band")
             b1, b2 = st.columns(2)
             with b1:
-                f_s = st.number_input("Start Freq (Hz)", value=10.0, step=10.0, key="det_f1")
+                f_s = st.number_input("Start Freq (Hz)", step=10.0, key="det_f_start", on_change=update_setting, args=("det_f_start",))
             with b2:
-                f_e = st.number_input("End Freq (Hz)", value=1000.0, step=100.0, key="det_f2")
+                f_e = st.number_input("End Freq (Hz)", step=100.0, key="det_f_end", on_change=update_setting, args=("det_f_end",))
                 
             df_psd = pd.DataFrame({'Freq (Hz)': f_psd, 'Voltage Noise (V/rtHz)': asd_v})
             df_psd = df_psd[(df_psd['Freq (Hz)'] > 1) & (df_psd['Freq (Hz)'] < fs_actual/2.1)]
@@ -467,7 +494,7 @@ with detect_tab:
                 st.info(f"Representative Noise (Median in band): **{measured_v_noise*1e6:.2f} µV/√Hz**")
     else:
         # Manual Entry
-        measured_v_noise = st.number_input("Voltage Noise Density (V/√Hz)", value=1e-6, format="%.2e", key="det_manual_v")
+        measured_v_noise = st.number_input("Voltage Noise Density (V/√Hz)", format="%.2e", key="det_manual_v", on_change=update_setting, args=("det_manual_v",))
             
     st.divider()
     
@@ -492,8 +519,9 @@ with detect_tab:
         st.warning("⚠️ Low Detectivity. Check noise floor and responsivity.")
 
     st.divider()
+    st.divider()
     st.subheader("4. Export Data")
-    exp_name = st.text_input("Experiment Name", value="Detectivity_Run_1")
+    exp_name = st.text_input("Experiment Name", key="det_exp_name", on_change=update_setting, args=("det_exp_name",))
     
     if st.button("💾 Export Measurement Data", use_container_width=True):
         if 'det_noise_data' not in st.session_state:

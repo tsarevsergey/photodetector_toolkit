@@ -66,7 +66,31 @@ DEFAULT_SETTINGS = {
     "scope_block_duration_ms": 20.0,
     "scope_streaming_duration_s": 2.0,
     "scope_num_samples": 2000,
-    "scope_sample_rate": 100000.0
+    "scope_sample_rate": 100000.0,
+    # Scope Commissioning - Quick Overrides
+    "com_quick_coupling": "DC",
+    "com_quick_range": "2V",
+    "com_quick_tia_gain": 1000.0,
+    # Scope Commissioning - Noise
+    "noise_source_r": 1000.0,
+    "noise_cal_gain": 1000.0,
+    "noise_cal_range": "10MV",
+    "noise_cal_coupling": "AC",
+    "noise_cal_duration": 1.0,
+    "noise_f_start": 10.0,
+    "noise_f_stop": 10000.0,
+    # Scope Commissioning - Detectivity
+    "det_area": 1.0,
+    "det_resp": 0.5,
+    "det_gain": 1e6,
+    "det_input_mode": "Live Capture",
+    "det_range": "10MV",
+    "det_coupling": "AC",
+    "det_duration": 1.0,
+    "det_f_start": 10.0,
+    "det_f_end": 1000.0,
+    "det_exp_name": "Detectivity_Run_1",
+    "det_manual_v": 1e-6
 }
 
 class SettingsManager:

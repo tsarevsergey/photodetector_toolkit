@@ -394,8 +394,6 @@ with tab_pulse:
                       
             except Exception as e:
                 st.error(f"Measurement Failed: {e}")
-                import traceback
-                traceback.print_exc()
 
     st.markdown("### Controls")
     c_stop = st.container()
