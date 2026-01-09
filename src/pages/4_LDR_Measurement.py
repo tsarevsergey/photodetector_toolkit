@@ -16,6 +16,33 @@ from analysis.calibration import CalibrationManager
 from utils.settings_manager import SettingsManager
 from utils.ui_components import render_global_sidebar
 
+# Initialize Settings
+settings = SettingsManager()
+
+# Init Session State from Settings if missing
+def init_pref(key, setting_key=None):
+    if setting_key is None: setting_key = key
+    if key not in st.session_state:
+        st.session_state[key] = settings.get(setting_key)
+
+init_pref("pref_base_folder", "base_save_folder")
+init_pref("pref_save_raw", "save_raw_traces")
+init_pref("pref_snr_threshold", "snr_threshold")
+init_pref("pref_min_cycles", "min_cycles")
+init_pref("pref_compliance", "led_compliance")
+init_pref("pref_averages", "averages")
+init_pref("sweep_resistor", "resistor")
+init_pref("sweep_start_i", "sweep_start")
+init_pref("sweep_stop_i", "sweep_stop")
+init_pref("sweep_steps", "sweep_steps")
+init_pref("sweep_delay_cycles", "capture_delay_cycles")
+init_pref("sweep_freq", "sweep_freq")
+init_pref("sweep_duty", "duty_cycle")
+init_pref("pref_scope_range_idx", "scope_range_idx")
+init_pref("pref_acq_mode", "acquisition_mode")
+init_pref("pref_duration", "capture_duration")
+init_pref("pref_sample_rate", "sample_rate")
+init_pref("pref_auto_range", "auto_range")
 init_pref("pref_ac_coupling", "ac_coupling")
 init_pref("sample_name", "sample_name")
 
