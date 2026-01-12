@@ -9,7 +9,7 @@
     "led_compliance": 9.0,
     "averages": 1,
     "resistor": 100000000.0,
-    "sweep_start": 0.001,
+    "sweep_start": 0.01,
     "sweep_stop": 1e-05,
     "sweep_steps": 8,
     "capture_delay_cycles": 50,
