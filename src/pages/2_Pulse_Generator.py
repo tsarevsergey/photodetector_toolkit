@@ -25,7 +25,6 @@ def init_pref(key, setting_key=None):
     if setting_key is None: setting_key = key
     if key not in st.session_state:
         st.session_state[key] = settings.get(setting_key)
-
 init_pref("p_gen_mode", "pulse_gen_mode")
 init_pref("p_gen_high", "pulse_gen_high_level")
 init_pref("p_gen_low", "pulse_gen_low_level")
@@ -39,6 +38,10 @@ init_pref("p_gen_duration", "pulse_gen_capture_duration")
 init_pref("p_gen_samples", "pulse_gen_samples")
 init_pref("p_gen_ac", "pulse_gen_ac_coupling")
 init_pref("p_gen_delay", "pulse_gen_delay_cycles")
+
+# Fix duty cycle initialization to integer percentage
+if isinstance(st.session_state.p_gen_duty, float) and st.session_state.p_gen_duty <= 1.0:
+    st.session_state.p_gen_duty = int(st.session_state.p_gen_duty * 100)
 
 render_global_sidebar(settings)
 st.title("🌊 SMU List Sweep & Pulse Generator")
@@ -129,31 +132,33 @@ with tab_pulse:
         
         with col_p1:
             st.markdown("**Levels**")
-            st.selectbox("Pulse Mode", ["Current", "Voltage"], key="p_gen_mode", on_change=sync_setting, args=("p_gen_mode", "pulse_gen_mode"))
+            st.selectbox("Pulse Mode", ["Current", "Voltage"], key="p_gen_mode", 
+                         index=0 if st.session_state.p_gen_mode == "Current" else 1,
+                         on_change=sync_setting, args=("p_gen_mode", "pulse_gen_mode"))
             pulse_mode = st.session_state.p_gen_mode
             mode_str = "CURR" if pulse_mode == "Current" else "VOLT"
             
             MAX_CURR_A = 0.1
-            MAX_VOLT_V = 9.0
+            MAX_VOLT_V = st.session_state.get("global_safety_max_v", 10.0)
             
             if mode_str == 'CURR':
-                high_val = st.number_input(f"High Level (A) [Max {MAX_CURR_A}]", max_value=MAX_CURR_A, format="%.6e", key="p_gen_high", on_change=sync_setting, args=("p_gen_high", "pulse_gen_high_level"))
-                low_val = st.number_input(f"Low Level (A)", max_value=MAX_CURR_A, format="%.6e", key="p_gen_low", on_change=sync_setting, args=("p_gen_low", "pulse_gen_low_level"))
-                comp_val = st.number_input(f"Compliance (V) [Max {MAX_VOLT_V}]", max_value=MAX_VOLT_V, key="p_gen_comp", on_change=sync_setting, args=("p_gen_comp", "pulse_gen_compliance"))
+                high_val = st.number_input(f"High Level (A) [Max {MAX_CURR_A}]", max_value=MAX_CURR_A, format="%.6e", key="p_gen_high", value=st.session_state.p_gen_high, on_change=sync_setting, args=("p_gen_high", "pulse_gen_high_level"))
+                low_val = st.number_input(f"Low Level (A)", max_value=MAX_CURR_A, format="%.6e", key="p_gen_low", value=st.session_state.p_gen_low, on_change=sync_setting, args=("p_gen_low", "pulse_gen_low_level"))
+                comp_val = st.number_input(f"Compliance (V) [Max {MAX_VOLT_V}]", min_value=0.1, max_value=MAX_VOLT_V, key="p_gen_comp", value=max(0.1, float(st.session_state.p_gen_comp)), on_change=sync_setting, args=("p_gen_comp", "pulse_gen_compliance"))
             else:
-                high_val = st.number_input(f"High Level (V) [Max {MAX_VOLT_V}]", max_value=MAX_VOLT_V, format="%.6e", key="p_gen_high", on_change=sync_setting, args=("p_gen_high", "pulse_gen_high_level"))
-                low_val = st.number_input(f"Low Level (V)", max_value=MAX_VOLT_V, format="%.6e", key="p_gen_low", on_change=sync_setting, args=("p_gen_low", "pulse_gen_low_level"))
-                comp_val = st.number_input(f"Compliance (A) [Max {MAX_CURR_A}]", max_value=MAX_CURR_A, key="p_gen_comp", on_change=sync_setting, args=("p_gen_comp", "pulse_gen_compliance"))
+                high_val = st.number_input(f"High Level (V) [Max {MAX_VOLT_V}]", max_value=MAX_VOLT_V, format="%.6e", key="p_gen_high", value=st.session_state.p_gen_high, on_change=sync_setting, args=("p_gen_high", "pulse_gen_high_level"))
+                low_val = st.number_input(f"Low Level (V)", max_value=MAX_VOLT_V, format="%.6e", key="p_gen_low", value=st.session_state.p_gen_low, on_change=sync_setting, args=("p_gen_low", "pulse_gen_low_level"))
+                comp_val = st.number_input(f"Compliance (A) [Max {MAX_CURR_A}]", min_value=1e-9, max_value=MAX_CURR_A, key="p_gen_comp", value=max(1e-9, float(st.session_state.p_gen_comp)), on_change=sync_setting, args=("p_gen_comp", "pulse_gen_compliance"))
 
         with col_p2:
             st.markdown("**Timing**")
-            freq = st.number_input("Frequency (Hz)", min_value=0.001, max_value=1000.0, key="p_gen_freq", on_change=sync_setting, args=("p_gen_freq", "pulse_gen_frequency"))
+            freq = st.number_input("Frequency (Hz)", min_value=0.001, max_value=1000.0, key="p_gen_freq", value=st.session_state.p_gen_freq, on_change=sync_setting, args=("p_gen_freq", "pulse_gen_frequency"))
             period = 1.0 / freq
             st.caption(f"Period: {period*1000:.2f} ms")
             
-            duty_pct = st.slider("Duty Cycle (%)", 1, 99, key="p_gen_duty", on_change=lambda: settings.set("pulse_gen_duty_cycle", st.session_state.p_gen_duty / 100.0))
-            duty = duty_pct / 100.0
-            cycles = st.number_input("Cycles (0 = Infinite)", min_value=0, key="p_gen_cycles", on_change=sync_setting, args=("p_gen_cycles", "pulse_gen_cycles"))
+            utility_duty = st.slider("Duty Cycle (%)", 1, 99, key="p_gen_duty", value=st.session_state.p_gen_duty, on_change=lambda: settings.set("pulse_gen_duty_cycle", st.session_state.p_gen_duty / 100.0))
+            duty = st.session_state.p_gen_duty / 100.0
+            cycles = st.number_input("Cycles (0 = Infinite)", min_value=0, key="p_gen_cycles", value=st.session_state.p_gen_cycles, on_change=sync_setting, args=("p_gen_cycles", "pulse_gen_cycles"))
             
         st.plotly_chart(preview_pulse_train(high_val, low_val, period, duty), use_container_width=True)
             
@@ -175,7 +180,7 @@ with tab_pulse:
             scope = st.session_state.scope
             enable_scope = st.checkbox("Enable Measurement", value=True)
             if enable_scope:
-                resistor = st.number_input("Resistor (Ω)", key="p_gen_res", on_change=sync_setting, args=("p_gen_res", "pulse_gen_resistor"))
+                resistor = st.number_input("Resistor (Ω)", min_value=0.1, key="p_gen_res", value=max(0.1, float(st.session_state.p_gen_res)), on_change=sync_setting, args=("p_gen_res", "pulse_gen_resistor"))
                 min_dur = max(3 * period, 0.05)
                 st.caption(f"Capture Dur: {min_dur*1000:.1f}ms")
         else:
@@ -228,16 +233,19 @@ with tab_pulse:
         st.markdown("### Pulse & Measure Logic")
         c_sc1, c_sc2, c_sc3, c_sc4 = st.columns(4)
         with c_sc1:
-             scope_range = st.selectbox("Scope Range", ["10V", "5V", "2V", "1V", "500mV", "200mV"], key="p_gen_scope_range", on_change=sync_setting, args=("p_gen_scope_range", "pulse_gen_scope_range"))
+             opts = ["10V", "5V", "2V", "1V", "500mV", "200mV"]
+             curr_rng = st.session_state.p_gen_scope_range
+             idx = opts.index(curr_rng) if curr_rng in opts else 0
+             scope_range = st.selectbox("Scope Range", opts, index=idx, key="p_gen_scope_range", on_change=sync_setting, args=("p_gen_scope_range", "pulse_gen_scope_range"))
         with c_sc2:
              calc_dur = max(3 * period, 0.05)
-             override_dur = st.number_input("Capture Duration (s)", format="%.4f", key="p_gen_duration", on_change=sync_setting, args=("p_gen_duration", "pulse_gen_capture_duration"))
+             override_dur = st.number_input("Capture Duration (s)", format="%.4f", key="p_gen_duration", value=st.session_state.p_gen_duration, on_change=sync_setting, args=("p_gen_duration", "pulse_gen_capture_duration"))
         with c_sc3:
-             pts = st.number_input("Samples", key="p_gen_samples", on_change=sync_setting, args=("p_gen_samples", "pulse_gen_samples"))
+             pts = st.number_input("Samples", key="p_gen_samples", value=st.session_state.p_gen_samples, on_change=sync_setting, args=("p_gen_samples", "pulse_gen_samples"))
         with c_sc4:
-             ac_coupling = st.checkbox("AC Coupling", key="p_gen_ac", on_change=sync_setting, args=("p_gen_ac", "pulse_gen_ac_coupling"))
+             ac_coupling = st.checkbox("AC Coupling", key="p_gen_ac", value=st.session_state.p_gen_ac, on_change=sync_setting, args=("p_gen_ac", "pulse_gen_ac_coupling"))
         
-        delay_cycles = st.slider("Measurement Delay (Cycles)", 0, max(1, int(cycles)-1) if cycles>0 else 1000, key="p_gen_delay", on_change=sync_setting, args=("p_gen_delay", "pulse_gen_delay_cycles"))
+        delay_cycles = st.slider("Measurement Delay (Cycles)", 0, max(1, int(cycles)-1) if cycles>0 else 1000, key="p_gen_delay", value=st.session_state.p_gen_delay, on_change=sync_setting, args=("p_gen_delay", "pulse_gen_delay_cycles"))
 
         if st.button("🚀 Trigger & Measure Pulse", type="primary", use_container_width=True):
              try:

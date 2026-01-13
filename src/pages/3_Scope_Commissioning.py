@@ -108,11 +108,11 @@ if scope.state == InstrumentState.ERROR:
 # --- tabs ---
 config_tab, capture_tab, noise_tab, detect_tab = st.tabs(["Configuration", "Capture & View", "Noise Calibration", "Detectivity"])
 
+ranges = ['20MV', '50MV', '100MV', '200MV', '500MV', '1V', '2V', '5V', '10V']
+
 with config_tab:
     st.subheader("Channel Setup")
     c1, c2 = st.columns(2)
-    
-    ranges = ['10MV', '20MV', '50MV', '100MV', '200MV', '500MV', '1V', '2V', '5V', '10V', '20V']
     
     with c1:
         st.markdown("### Channel A")
@@ -278,7 +278,7 @@ with noise_tab:
     with n2:
         cal_gain = st.number_input("TIA Gain (V/A)", value=st.session_state.get('cal_gain_val', 1000.0), format="%.2e", min_value=1.0, key="cal_gain_val")
     with n3:
-        cal_range = st.selectbox("Scope Range", ['10MV', '20MV', '50MV', '100MV', '200MV', '500MV', '1V', '2V'], index=0, key="cal_range_sel")
+        cal_range = st.selectbox("Scope Range", ranges, index=0, key="cal_range_sel")
     with n4:
         cal_coupling = st.selectbox("Coupling", ["AC", "DC"], index=0, key="cal_coup_sel")
     with n5:
@@ -417,7 +417,7 @@ with detect_tab:
     if d_input_mode == "Live Capture":
         mcol1, mcol2, mcol3 = st.columns(3)
         with mcol1:
-            det_range = st.selectbox("Scope Range", ['10MV', '20MV', '50MV', '100MV', '200MV', '500MV', '1V', '2V'], index=0, key="det_range")
+            det_range = st.selectbox("Scope Range", ranges, index=0, key="det_range")
         with mcol2:
             det_coupling = st.selectbox("Coupling", ["AC", "DC"], index=0, key="det_coup")
         with mcol3:
