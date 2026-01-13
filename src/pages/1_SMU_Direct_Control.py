@@ -14,8 +14,12 @@ from utils.ui_components import render_global_sidebar
 
 st.set_page_config(page_title="SMU Direct Control", layout="wide")
 settings = SettingsManager()
-render_global_sidebar(settings)
 
+def sync_setting(st_key, setting_key):
+    """Callback to sync session state with persistent settings."""
+    settings.set(setting_key, st.session_state[st_key])
+
+render_global_sidebar(settings)
 st.title("⚡ SMU Direct Control Interface")
 
 # --- Session State Management ---
@@ -26,12 +30,33 @@ if 'is_connected' not in st.session_state:
 if 'smu_log' not in st.session_state:
     st.session_state.smu_log = []
 
+# Persistent Settings
+def init_pref(key, setting_key=None):
+    if setting_key is None: setting_key = key
+    if key not in st.session_state:
+        st.session_state[key] = settings.get(setting_key)
+
+init_pref("pref_smu_address", "smu_visa_address")
+init_pref("pref_smu_mock", "smu_mock_mode")
+init_pref("smu_swp_start", "smu_sweep_start")
+init_pref("smu_swp_stop", "smu_sweep_stop")
+init_pref("smu_swp_steps", "smu_sweep_steps")
+init_pref("smu_swp_mode", "smu_sweep_mode")
+init_pref("smu_swp_dir", "smu_sweep_dir")
+init_pref("smu_swp_nplc", "smu_sweep_nplc")
+init_pref("smu_swp_comp", "smu_sweep_comp")
+init_pref("smu_man_mode", "smu_manual_mode")
+init_pref("smu_man_val", "smu_manual_val")
+init_pref("smu_man_comp", "smu_manual_comp")
+
 def log(msg):
     ts = time.strftime("%H:%M:%S")
     st.session_state.smu_log.append(f"[{ts}] {msg}")
 
 import plotly.express as px
 import numpy as np
+
+# ... (Status Banner etc) ...
 
 # --- Helper Functions ---
 def render_status_banner(smu_controller):
@@ -70,10 +95,8 @@ with st.sidebar:
     st.divider() # Separate from global config
     st.header("SMU Connection")
     
-    # Default address from ports.txt or fallback
-    default_addr = os.getenv("SMU_ADDRESS", "USB0::0x0957::0xCD18::MY51143841::0::INSTR")
-    address = st.text_input("VISA Address", value=default_addr)
-    mock_mode = st.checkbox("Mock Mode", value=False)
+    address = st.text_input("VISA Address", key="pref_smu_address", value=st.session_state.pref_smu_address, on_change=sync_setting, args=("pref_smu_address", "smu_visa_address"))
+    mock_mode = st.checkbox("Mock Mode", key="pref_smu_mock", value=st.session_state.pref_smu_mock, on_change=sync_setting, args=("pref_smu_mock", "smu_mock_mode"))
     
     if st.button("Connect"):
         # 1. Reset State (Clear previous connections/errors)
@@ -153,14 +176,14 @@ else:
         
         with col1:
             st.markdown("### Source Settings")
-            source_mode = st.radio("Source Mode", ["Voltage", "Current"])
+            source_mode = st.radio("Source Mode", ["Voltage", "Current"], key="smu_man_mode", index=0 if st.session_state.smu_man_mode == "Voltage" else 1, on_change=sync_setting, args=("smu_man_mode", "smu_manual_mode"))
             
             if source_mode == "Voltage":
-                source_val = st.number_input("Set Voltage (V)", value=0.0, step=0.1, format="%.4f")
-                compliance = st.number_input("Current Compliance (A)", value=0.1, step=0.01, format="%.6f")
+                source_val = st.number_input("Set Voltage (V)", step=0.1, format="%.4f", key="smu_man_val", value=st.session_state.smu_man_val, on_change=sync_setting, args=("smu_man_val", "smu_manual_val"))
+                compliance = st.number_input("Current Compliance (A)", step=0.01, format="%.6f", key="smu_man_comp", value=st.session_state.smu_man_comp, on_change=sync_setting, args=("smu_man_comp", "smu_manual_comp"))
             else:
-                source_val = st.number_input("Set Current (A)", value=0.0, step=1e-6, format="%.8f")
-                compliance = st.number_input("Voltage Compliance (V)", value=2.0, step=0.1, format="%.2f")
+                source_val = st.number_input("Set Current (A)", step=1e-6, format="%.8f", key="smu_man_val", value=st.session_state.smu_man_val, on_change=sync_setting, args=("smu_man_val", "smu_manual_val"))
+                compliance = st.number_input("Voltage Compliance (V)", step=0.1, format="%.2f", key="smu_man_comp", value=st.session_state.smu_man_comp, on_change=sync_setting, args=("smu_man_comp", "smu_manual_comp"))
                 
             if st.button("Apply Settings"):
                 try:
@@ -269,17 +292,19 @@ else:
             sc1, sc2, sc3 = st.columns(3)
             with sc1:
                 # Param
-                start_v = st.number_input("Start V", value=-1.0)
-                stop_v = st.number_input("Stop V", value=1.0)
-                num_steps = st.number_input("Number of Points", value=21, min_value=2, step=1)
+                start_v = st.number_input("Start V", key="smu_swp_start", value=st.session_state.smu_swp_start, on_change=sync_setting, args=("smu_swp_start", "smu_sweep_start"))
+                stop_v = st.number_input("Stop V", key="smu_swp_stop", value=st.session_state.smu_swp_stop, on_change=sync_setting, args=("smu_swp_stop", "smu_sweep_stop"))
+                num_steps = st.number_input("Number of Points", min_value=2, step=1, key="smu_swp_steps", value=st.session_state.smu_swp_steps, on_change=sync_setting, args=("smu_swp_steps", "smu_sweep_steps"))
             with sc2:
                 # Modes
-                sweep_mode = st.selectbox("Spacing", ["Linear", "Log"])
-                sweep_dir = st.selectbox("Direction", ["Single", "Double"])
-                nplc = st.selectbox("Speed (NPLC)", [0.01, 0.1, 1.0, 10.0], index=2)
+                sweep_mode = st.selectbox("Spacing", ["Linear", "Log"], key="smu_swp_mode", index=0 if st.session_state.smu_swp_mode == "Linear" else 1, on_change=sync_setting, args=("smu_swp_mode", "smu_sweep_mode"))
+                sweep_dir = st.selectbox("Direction", ["Single", "Double"], key="smu_swp_dir", index=0 if st.session_state.smu_swp_dir == "Single" else 1, on_change=sync_setting, args=("smu_swp_dir", "smu_sweep_dir"))
+                smu_nplc_opts = [0.01, 0.1, 1.0, 10.0]
+                smu_nplc_idx = smu_nplc_opts.index(st.session_state.smu_swp_nplc) if st.session_state.smu_swp_nplc in smu_nplc_opts else 1
+                nplc = st.selectbox("Speed (NPLC)", smu_nplc_opts, key="smu_swp_nplc", index=smu_nplc_idx, on_change=sync_setting, args=("smu_swp_nplc", "smu_sweep_nplc"))
             with sc3:
                 # Limits
-                sweep_comp = st.number_input("Compliance (A)", value=0.01, format="%.1e")
+                sweep_comp = st.number_input("Compliance (A)", format="%.1e", key="smu_swp_comp", value=st.session_state.smu_swp_comp, on_change=sync_setting, args=("smu_swp_comp", "smu_sweep_comp"))
                 
         run_sweep = st.button("Run Sweep", type="primary")
         

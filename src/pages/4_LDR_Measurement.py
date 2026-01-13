@@ -29,8 +29,8 @@ init_pref("pref_base_folder", "base_save_folder")
 init_pref("pref_save_raw", "save_raw_traces")
 init_pref("pref_snr_threshold", "snr_threshold")
 init_pref("pref_min_cycles", "min_cycles")
-init_pref("pref_compliance", "led_compliance")
-init_pref("pref_averages", "averages")
+init_pref("w_compliance", "led_compliance")
+init_pref("w_averages", "averages")
 init_pref("sweep_resistor", "resistor")
 init_pref("sweep_start_i", "sweep_start")
 init_pref("sweep_stop_i", "sweep_stop")
@@ -44,15 +44,32 @@ init_pref("pref_duration", "capture_duration")
 init_pref("pref_sample_rate", "sample_rate")
 init_pref("pref_auto_range", "auto_range")
 init_pref("pref_ac_coupling", "ac_coupling")
+init_pref("sample_name", "sample_name")
+init_pref("enable_saving", "ldr_save_data")
+
+# Special handling for selectbox labels to avoid TypeErrors with float/int values in session state
+def init_label(key, setting_key, mapping):
+    if key not in st.session_state:
+        stored_val = settings.get(setting_key)
+        label = next((k for k, v in mapping.items() if v == stored_val), list(mapping.keys())[0])
+        st.session_state[key] = label
+
+femto_gains = {"10^3 (1k)": 1e3, "10^4 (10k)": 1e4, "10^5 (100k)": 1e5, "10^6 (1M)": 1e6, "10^7 (10M)": 1e7, "10^8 (100M)": 1e8, "10^9 (1G)": 1e9, "10^10 (10G)": 1e10, "10^11 (100G)": 1e11}
+init_label("ldr_tia_gain_label", "ldr_tia_gain", femto_gains)
+init_pref("ldr_resistor_local_sync", "ldr_resistor")
+
+scope_range_options = ["20mV", "50mV", "100mV", "200mV", "500mV", "1V", "2V", "5V", "10V"]
+if "w_scope_range_label" not in st.session_state:
+    idx = min(st.session_state.pref_scope_range_idx, len(scope_range_options)-1)
+    st.session_state.w_scope_range_label = scope_range_options[idx]
 
 # Helper to save settings
 def save_setting(key, value):
     settings.set(key, value)
 
-def update_freq(): save_setting("sweep_freq", st.session_state.sweep_freq)
-def update_mode(): save_setting("acquisition_mode", st.session_state.pref_acq_mode)
-def update_duration(): save_setting("capture_duration", st.session_state.pref_duration)
-def update_rate(): save_setting("sample_rate", st.session_state.pref_sample_rate)
+def sync_setting(st_key, setting_key):
+    """Callback to sync session state with persistent settings."""
+    save_setting(setting_key, st.session_state[st_key])
 
 st.set_page_config(page_title="LDR Measurement", layout="wide")
 render_global_sidebar(settings)
@@ -75,32 +92,33 @@ tab_measure, tab_settings = st.tabs(["Measurement", "Settings"])
 
 with tab_settings:
     st.subheader("General Settings")
-    if 'suppress_info_logs' not in st.session_state: st.session_state.suppress_info_logs = False
-    st.session_state.suppress_info_logs = st.checkbox("Suppress INFO logs (Show only Warnings/Errors)", value=st.session_state.suppress_info_logs)
     
-    # Apply logging level
-    log_level = logging.WARNING if st.session_state.suppress_info_logs else logging.INFO
+    # Apply logging level based on global sidebar setting
+    suppress = st.session_state.get('pref_suppress_info', True)
+    log_level = logging.WARNING if suppress else logging.INFO
     for logger_name in ["workflow.LDR", "instrument.SMU", "instrument.Scope"]:
         logging.getLogger(logger_name).setLevel(log_level)
+    
+    st.info(f"Logging Level: {'WARNING (Suppressed)' if suppress else 'INFO (Verbose)'}. Change this in the Sidebar.")
 
     st.divider()
     st.subheader("Data Saving")
-    st.session_state.pref_base_folder = st.text_input("Base Save Folder", value=st.session_state.pref_base_folder)
-    st.session_state.pref_save_raw = st.checkbox("Save Raw Traces (Oscilloscope Data)", value=st.session_state.pref_save_raw)
+    st.text_input("Base Save Folder", key="pref_base_folder", value=st.session_state.pref_base_folder, on_change=sync_setting, args=("pref_base_folder", "base_save_folder"))
+    st.checkbox("Save Raw Traces (Oscilloscope Data)", key="pref_save_raw", value=st.session_state.pref_save_raw, on_change=sync_setting, args=("pref_save_raw", "save_raw_traces"))
     
     st.divider()
     st.subheader("Sweep Quality")
-    st.session_state.pref_snr_threshold = st.number_input("SNR Pause Threshold", value=st.session_state.pref_snr_threshold, min_value=1.0, max_value=1000.0, step=1.0)
-    st.number_input("Min Cycles per Step", value=st.session_state.pref_min_cycles, min_value=10, max_value=10000, key='pref_min_cycles')
+    st.number_input("SNR Pause Threshold", min_value=1.0, max_value=1000.0, step=1.0, key="pref_snr_threshold", value=st.session_state.pref_snr_threshold, on_change=sync_setting, args=("pref_snr_threshold", "snr_threshold"))
+    st.number_input("Min Cycles per Step", min_value=10, max_value=10000, key='pref_min_cycles', value=st.session_state.pref_min_cycles, on_change=sync_setting, args=("pref_min_cycles", "min_cycles"))
     
     st.divider()
     st.subheader("Acquisition Settings")
-    st.radio("Mode", ["Block", "Streaming"], horizontal=True, key='pref_acq_mode', on_change=update_mode)
+    st.radio("Mode", ["Block", "Streaming"], horizontal=True, key='pref_acq_mode', index=0 if st.session_state.pref_acq_mode == "Block" else 1, on_change=sync_setting, args=("pref_acq_mode", "acquisition_mode"))
     c_acq1, c_acq2 = st.columns(2)
     with c_acq1:
-        st.number_input("Capture Duration (s)", value=st.session_state.pref_duration, min_value=0.1, max_value=60.0, step=0.1, key='pref_duration', on_change=update_duration)
+        st.number_input("Capture Duration (s)", min_value=0.1, max_value=60.0, step=0.1, key='pref_duration', value=st.session_state.pref_duration, on_change=sync_setting, args=("pref_duration", "capture_duration"))
     with c_acq2:
-         st.number_input("Sample Rate (Hz)", value=st.session_state.pref_sample_rate, min_value=1000.0, max_value=1000000.0, step=1000.0, key='pref_sample_rate', on_change=update_rate)
+         st.number_input("Sample Rate (Hz)", min_value=1000.0, max_value=1000000.0, step=1000.0, key='pref_sample_rate', value=st.session_state.pref_sample_rate, on_change=sync_setting, args=("pref_sample_rate", "sample_rate"))
 
 with tab_measure:
     # 1. Check for Paused State (Prominent at Top)
@@ -135,44 +153,47 @@ with tab_measure:
     c1, c2 = st.columns([1, 2])
     with c1:
         st.subheader("Sweep Parameters")
-        start_i = st.number_input("Start Current (A)", value=st.session_state.sweep_start_i, format="%.1e", min_value=1e-7, max_value=0.1, key='sweep_start_i')
-        stop_i = st.number_input("Stop Current (A)", value=st.session_state.sweep_stop_i, format="%.1e", min_value=1e-7, max_value=0.1, key='sweep_stop_i')
-        steps = st.number_input("Steps", value=st.session_state.sweep_steps, min_value=2, max_value=50, key='sweep_steps')
+        start_i = st.number_input("Start Current (A)", format="%.1e", min_value=1e-7, max_value=0.1, key='sweep_start_i', value=st.session_state.sweep_start_i, on_change=sync_setting, args=("sweep_start_i", "sweep_start"))
+        stop_i = st.number_input("Stop Current (A)", format="%.1e", min_value=1e-7, max_value=0.1, key='sweep_stop_i', value=st.session_state.sweep_stop_i, on_change=sync_setting, args=("sweep_stop_i", "sweep_stop"))
+        steps = st.number_input("Steps", min_value=2, max_value=50, key='sweep_steps', value=st.session_state.sweep_steps, on_change=sync_setting, args=("sweep_steps", "sweep_steps"))
         st.divider()
-        freq = st.number_input("Frequency (Hz)", value=st.session_state.sweep_freq, key='sweep_freq', on_change=update_freq)
-        duty = st.slider("Duty Cycle", 0.1, 0.9, value=st.session_state.sweep_duty, key='sweep_duty')
-        delay_cycles = st.number_input("Capture Delay (Cycles)", value=st.session_state.sweep_delay_cycles, min_value=0, max_value=1000, key='sweep_delay_cycles')
+        freq = st.number_input("Frequency (Hz)", min_value=0.1, max_value=100000.0, key='sweep_freq', value=st.session_state.sweep_freq, on_change=sync_setting, args=("sweep_freq", "sweep_freq"))
+        duty = st.slider("Duty Cycle", 0.1, 0.9, key='sweep_duty', value=st.session_state.sweep_duty, on_change=sync_setting, args=("sweep_duty", "duty_cycle"))
+        delay_cycles = st.number_input("Capture Delay (Cycles)", min_value=0, max_value=1000, key='sweep_delay_cycles', value=st.session_state.sweep_delay_cycles, on_change=sync_setting, args=("sweep_delay_cycles", "capture_delay_cycles"))
         st.divider()
         st.subheader("Sample Information")
-        if 'sample_name' not in st.session_state: st.session_state.sample_name = "Sample_1"
-        sample_name = st.text_input("Sample Name / ID", value=st.session_state.sample_name, key='sample_name')
-        enable_saving = st.checkbox("💾 Save Data During Measurement", value=st.session_state.get('enable_saving', True), key='enable_saving')
+        sample_name = st.text_input("Sample Name / ID", key='sample_name', value=st.session_state.sample_name, on_change=sync_setting, args=('sample_name', 'sample_name'))
+        enable_saving = st.checkbox("💾 Save Data During Measurement", key='enable_saving', value=st.session_state.enable_saving, on_change=sync_setting, args=('enable_saving', 'ldr_save_data'))
         st.divider()
         st.write("#### Amplifier Settings")
         current_type = st.session_state.global_amp_type
         st.info(f"Amplifier Mode: **{current_type}** (Change in Sidebar)")
         if current_type == "FEMTO TIA":
-            femto_gains = {"10^3 (1k)": 1e3, "10^4 (10k)": 1e4, "10^5 (100k)": 1e5, "10^6 (1M)": 1e6, "10^7 (10M)": 1e7, "10^8 (100M)": 1e8, "10^9 (1G)": 1e9, "10^10 (10G)": 1e10, "10^11 (100G)": 1e11}
-            curr_val = st.session_state.global_tia_gain
             keys = list(femto_gains.keys())
-            def_idx = next((i for i, k in enumerate(keys) if femto_gains[k] == curr_val), 0)
-            sel_gain = st.selectbox("TIA Gain (V/A)", keys, index=def_idx, key='ldr_tia_gain_local_sync')
-            st.session_state.global_tia_gain = femto_gains[sel_gain]
-            r_val = st.session_state.global_tia_gain
+            try:
+                def_idx = int(keys.index(st.session_state.ldr_tia_gain_label))
+            except:
+                def_idx = 0
+            st.selectbox("TIA Gain (V/A)", keys, index=def_idx, key='ldr_tia_gain_label', 
+                         on_change=lambda: save_setting("ldr_tia_gain", femto_gains[st.session_state.ldr_tia_gain_label]))
+            r_val = femto_gains[st.session_state.ldr_tia_gain_label]
         else:
-            new_r = st.number_input("Gain (Resistor) (Ω)", value=st.session_state.global_resistor_val, format="%.2f", key='ldr_resistor_local_sync')
-            st.session_state.global_resistor_val = new_r
-            r_val = new_r
-        voltage_limit = st.number_input("LED Compliance Voltage (V)", value=st.session_state.pref_compliance, min_value=1.0, max_value=20.0, step=0.5, key='w_compliance')
-        averages = st.number_input("Averages per Step", value=st.session_state.pref_averages, min_value=1, max_value=20, key='w_averages')
-        scope_range_options = ["20mV", "50mV", "100mV", "200mV", "500mV", "1V", "2V", "5V", "10V"]
-        idx = min(st.session_state.pref_scope_range_idx, len(scope_range_options)-1)
-        scope_range_val = st.selectbox("Start Scope Range", scope_range_options, index=idx, key='w_scope_range')
+            st.number_input("Gain (Resistor) (Ω)", format="%.2f", min_value=0.1, key='ldr_resistor_local_sync', value=st.session_state.ldr_resistor_local_sync, on_change=sync_setting, args=("ldr_resistor_local_sync", "ldr_resistor"))
+            r_val = st.session_state.ldr_resistor_local_sync
+            
+        voltage_limit = st.number_input("LED Compliance Voltage (V)", min_value=1.0, max_value=20.0, step=0.5, key='w_compliance', value=st.session_state.w_compliance, on_change=sync_setting, args=("w_compliance", "led_compliance"))
+        averages = st.number_input("Averages per Step", min_value=1, max_value=20, key='w_averages', value=st.session_state.w_averages, on_change=sync_setting, args=("w_averages", "averages"))
+        
+        idx = scope_range_options.index(st.session_state.w_scope_range_label) if st.session_state.w_scope_range_label in scope_range_options else 6
+        st.selectbox("Start Scope Range", scope_range_options, index=idx, key='w_scope_range_label', 
+                     on_change=lambda: [save_setting("scope_range_idx", scope_range_options.index(st.session_state.w_scope_range_label)), st.session_state.__setitem__('pref_scope_range_idx', scope_range_options.index(st.session_state.w_scope_range_label))])
+        scope_range_val = st.session_state.w_scope_range_label
+        
         c_scope1, c_scope2 = st.columns(2)
         with c_scope1:
-            auto_range = st.checkbox("Auto-Range", value=st.session_state.pref_auto_range, key='pref_auto_range')
+            auto_range = st.checkbox("Auto-Range", key='pref_auto_range', value=st.session_state.pref_auto_range, on_change=sync_setting, args=("pref_auto_range", "auto_range"))
         with c_scope2:
-            ac_coupling = st.checkbox("AC Coupling", value=st.session_state.pref_ac_coupling, key='pref_ac_coupling')
+            ac_coupling = st.checkbox("AC Coupling", key='pref_ac_coupling', value=st.session_state.pref_ac_coupling, on_change=sync_setting, args=("pref_ac_coupling", "ac_coupling"))
         st.divider()
         start_btn = st.button("Start Sweep", type="primary")
         if 'stop_btn_clicked' not in st.session_state: st.session_state.stop_btn_clicked = False

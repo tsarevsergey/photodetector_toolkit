@@ -65,7 +65,12 @@ class LDRWorkflow:
         
         # Generate Current Levels (Logspace)
         s = start_current if start_current > 0 else 1e-9
-        current_levels_full = np.logspace(np.log10(s), np.log10(stop_current), steps)
+        e = stop_current if stop_current > 0 else 1e-9
+        if resistor_ohms <= 0:
+            resistor_ohms = 1.0e-12 # Prevent division by zero, though 1 Ohm would be better if we knew context
+            self.logger.warning("Resistor is 0 or negative. Setting to 1e-12 Ohm to avoid crash.")
+            
+        current_levels_full = np.logspace(np.log10(s), np.log10(e), steps)
         
         # Slice for current run
         # We need to maintain the original index 'i' for progress reporting
@@ -75,6 +80,8 @@ class LDRWorkflow:
                 levels_to_run.append((idx, lvl))
         
         # Scope settings
+        if frequency <= 0:
+            raise ValueError("Sweep Frequency must be > 0 Hz.")
         period = 1.0 / frequency
         
         # Mode Switching

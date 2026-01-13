@@ -17,6 +17,30 @@ from utils.ui_components import render_global_sidebar
 
 st.set_page_config(page_title="Scope Commissioning", layout="wide")
 settings = SettingsManager()
+
+def sync_setting(st_key, setting_key):
+    """Callback to sync session state with persistent settings."""
+    settings.set(setting_key, st.session_state[st_key])
+
+# --- Init Session State ---
+def init_pref(key, setting_key=None):
+    if setting_key is None: setting_key = key
+    if key not in st.session_state:
+        st.session_state[key] = settings.get(setting_key)
+
+init_pref("comm_range_a", "scope_comm_range_a")
+init_pref("comm_coup_a", "scope_comm_coupling_a")
+init_pref("comm_acq_mode", "scope_comm_acq_mode")
+init_pref("comm_duration_ms", "scope_comm_duration_ms")
+init_pref("comm_num_samples", "scope_comm_num_samples")
+init_pref("comm_sample_rate", "scope_comm_sample_rate")
+init_pref("comm_quick_range", "scope_comm_quick_range")
+init_pref("comm_quick_coup", "scope_comm_quick_coupling")
+init_pref("comm_tia_gain", "scope_comm_tia_gain")
+if 'comm_gain' not in st.session_state:
+    st.session_state.comm_gain = settings.get("scope_comm_tia_gain")
+
+init_pref("pref_scope_mock", "scope_mock_mode")
 render_global_sidebar(settings)
 st.title("📉 PicoScope 2208B Commissioning")
 
@@ -33,7 +57,7 @@ if 'scope_connected' not in st.session_state:
 with st.sidebar:
     st.divider() # Separate from global config
     st.header("Scope Connection")
-    mock_mode = st.checkbox("Mock Mode", value=False)
+    mock_mode = st.checkbox("Mock Mode", key="pref_scope_mock", value=st.session_state.pref_scope_mock, on_change=sync_setting, args=("pref_scope_mock", "scope_mock_mode"))
     
     if st.button("Connect Scope"):
         # Reset
@@ -93,8 +117,10 @@ with config_tab:
     with c1:
         st.markdown("### Channel A")
         en_a = st.checkbox("Enable Ch A", value=True)
-        range_a = st.selectbox("Range A", ranges, index=7) # 2V default
-        coup_a = st.selectbox("Coupling A", ["DC", "AC"], index=0)
+        st.selectbox("Range A", ranges, key="comm_range_a", index=ranges.index(st.session_state.comm_range_a) if st.session_state.comm_range_a in ranges else 0, on_change=sync_setting, args=("comm_range_a", "scope_comm_range_a"))
+        st.selectbox("Coupling A", ["DC", "AC"], key="comm_coup_a", index=0 if st.session_state.comm_coup_a == "DC" else 1, on_change=sync_setting, args=("comm_coup_a", "scope_comm_coupling_a"))
+        range_a = st.session_state.comm_range_a
+        coup_a = st.session_state.comm_coup_a
         
         if st.button("Apply Ch A"):
             scope.configure_channel('A', en_a, range_a, coup_a)
@@ -103,8 +129,8 @@ with config_tab:
     with c2:
         st.markdown("### Channel B")
         en_b = st.checkbox("Enable Ch B", value=False)
-        range_b = st.selectbox("Range B", ranges, index=7)
-        coup_b = st.selectbox("Coupling B", ["DC", "AC"], index=0)
+        range_b = st.selectbox("Range B", ranges, index=7, key="scope_comm_range_b_local")
+        coup_b = st.selectbox("Coupling B", ["DC", "AC"], index=0, key="scope_comm_coup_b_local")
         
         if st.button("Apply Ch B"):
             scope.configure_channel('B', en_b, range_b, coup_b)
@@ -117,23 +143,25 @@ with capture_tab:
     c_mode, c_dur = st.columns(2)
     
     with c_mode:
-        acq_mode = st.radio("Acquisition Mode", ["Block", "Streaming"], index=0, help="Block: Short, high speed. Streaming: Long, continuous.")
+        st.radio("Acquisition Mode", ["Block", "Streaming"], key="comm_acq_mode", index=0 if st.session_state.comm_acq_mode == "Block" else 1, on_change=sync_setting, args=("comm_acq_mode", "scope_comm_acq_mode"), help="Block: Short, high speed. Streaming: Long, continuous.")
+        acq_mode = st.session_state.comm_acq_mode
         
     with c_dur:
         if acq_mode == "Block":
-            duration_ms = st.number_input("Duration (ms)", value=20.0, min_value=0.1, max_value=5000.0, step=10.0)
+            duration_ms = st.number_input("Duration (ms)", min_value=0.1, max_value=5000.0, step=10.0, key="comm_duration_ms", value=st.session_state.comm_duration_ms, on_change=sync_setting, args=("comm_duration_ms", "scope_comm_duration_ms"))
             duration_s = duration_ms / 1000.0
         else:
-            duration_s = st.number_input("Duration (s)", value=2.0, min_value=0.1, max_value=100.0, step=0.5)
+            duration_s = st.number_input("Duration (s)", min_value=0.1, max_value=100.0, step=0.5, key="comm_duration_s_streaming", value=st.session_state.get('comm_duration_s_streaming', 2.0))
 
     # 2. Resolution Settings
     c_res1, c_res2 = st.columns(2)
     
     with c_res1:
         if acq_mode == "Block":
-            num_samples = st.number_input("Number of Samples", value=2000, min_value=100, max_value=20000)
+            num_samples = st.number_input("Number of Samples", min_value=100, max_value=1000000, key="comm_num_samples", value=st.session_state.comm_num_samples, on_change=sync_setting, args=("comm_num_samples", "scope_comm_num_samples"))
         else:
-            sample_rate = st.number_input("Sample Rate (Hz)", value=100000.0, min_value=1000.0, max_value=1000000.0, step=10000.0)
+            sample_rate = st.number_input("Sample Rate (Hz)", min_value=1000.0, max_value=1000000.0, step=10000.0, key="comm_sample_rate", value=st.session_state.comm_sample_rate, on_change=sync_setting, args=("comm_sample_rate", "scope_comm_sample_rate"))
+            sample_rate = st.session_state.comm_sample_rate
             
     with c_res2:
         if scope and st.session_state.scope_connected:
@@ -149,11 +177,15 @@ with capture_tab:
     st.caption("Quick Overrides (Applied before capture)")
     qc1, qc2, qc3 = st.columns(3)
     with qc1:
-        quick_coup = st.selectbox("Coupling", ["DC", "AC"], index=0, key="quick_coup")
+        st.selectbox("Coupling", ["DC", "AC"], key="comm_quick_coup", index=0 if st.session_state.comm_quick_coup == "DC" else 1, on_change=sync_setting, args=("comm_quick_coup", "scope_comm_quick_coupling"))
+        quick_coup = st.session_state.comm_quick_coup
     with qc2:
-        quick_range = st.selectbox("Range", ['10MV', '20MV', '50MV', '100MV', '200MV', '500MV', '1V', '2V', '5V', '10V'], index=7, key="quick_range")
+        qr_ranges = ['10MV', '20MV', '50MV', '100MV', '200MV', '500MV', '1V', '2V', '5V', '10V']
+        st.selectbox("Range", qr_ranges, key="comm_quick_range", index=qr_ranges.index(st.session_state.comm_quick_range) if st.session_state.comm_quick_range in qr_ranges else 0, on_change=sync_setting, args=("comm_quick_range", "scope_comm_quick_range"))
+        quick_range = st.session_state.comm_quick_range
     with qc3:
-        tia_gain = st.number_input("TIA Gain (Ω)", value=1000.0, format="%.2e", help="Load Resistor or TIA Gain for noise conversion")
+        tia_gain = st.number_input("TIA Gain (Ω)", format="%.2e", key="comm_tia_gain", value=st.session_state.comm_tia_gain, on_change=sync_setting, args=("comm_tia_gain", "scope_comm_tia_gain"), help="Load Resistor or TIA Gain for noise conversion")
+        st.session_state.comm_gain = tia_gain # Sync the snapshot value too
 
     if st.button("Start Capture", type="primary"):
         with st.spinner("Capturing..."):
@@ -174,7 +206,7 @@ with capture_tab:
                     # Save to Session State
                     st.session_state.comm_times = times
                     st.session_state.comm_volts = volts
-                    st.session_state.comm_acq_mode = acq_mode
+                    st.session_state.last_acq_mode_captured = acq_mode
                     st.session_state.comm_gain = tia_gain
                 else:
                     st.warning("No data returned.")
@@ -185,7 +217,7 @@ with capture_tab:
     if 'comm_times' in st.session_state:
         times = st.session_state.comm_times
         volts = st.session_state.comm_volts
-        acq_mode_disp = st.session_state.comm_acq_mode
+        acq_mode_disp = st.session_state.get('last_acq_mode_captured', 'Block')
         gain_disp = st.session_state.comm_gain
         
         st.divider()
@@ -242,15 +274,15 @@ with noise_tab:
     
     n1, n2, n3, n4, n5 = st.columns(5)
     with n1:
-        source_r_ohms = st.number_input("Source Resistor (Ω)", value=1000.0, format="%.2e", min_value=1.0)
+        source_r_ohms = st.number_input("Source Resistor (Ω)", value=st.session_state.get('cal_source_r', 1000.0), format="%.2e", min_value=1.0, key="cal_source_r")
     with n2:
-        cal_gain = st.number_input("TIA Gain (V/A)", value=1000.0, format="%.2e", min_value=1.0)
+        cal_gain = st.number_input("TIA Gain (V/A)", value=st.session_state.get('cal_gain_val', 1000.0), format="%.2e", min_value=1.0, key="cal_gain_val")
     with n3:
-        cal_range = st.selectbox("Scope Range", ['10MV', '20MV', '50MV', '100MV', '200MV', '500MV', '1V', '2V'], index=0, help="Use lowest range possible without clipping.")
+        cal_range = st.selectbox("Scope Range", ['10MV', '20MV', '50MV', '100MV', '200MV', '500MV', '1V', '2V'], index=0, key="cal_range_sel")
     with n4:
-        cal_coupling = st.selectbox("Coupling", ["AC", "DC"], index=0)
+        cal_coupling = st.selectbox("Coupling", ["AC", "DC"], index=0, key="cal_coup_sel")
     with n5:
-        cal_duration = st.number_input("Cal Duration (s)", value=1.0, step=0.5)
+        cal_duration = st.number_input("Cal Duration (s)", value=st.session_state.get('cal_dur', 1.0), step=0.5, key="cal_dur")
 
     if st.button("Measure Noise Floor", type="primary"):
         with st.spinner("Measuring Noise..."):
@@ -370,11 +402,11 @@ with detect_tab:
     st.subheader("1. Device & TIA Parameters")
     col1, col2 = st.columns(2)
     with col1:
-        d_area = st.number_input("Active Area (cm²)", value=1.0, step=0.1, format="%.4f", key="det_area")
-        d_resp = st.number_input("Responsivity (A/W)", value=0.5, step=0.1, key="det_resp")
+        d_area = st.number_input("Active Area (cm²)", step=0.1, format="%.4f", key="det_area", value=st.session_state.get('det_area', 1.0))
+        d_resp = st.number_input("Responsivity (A/W)", step=0.1, key="det_resp", value=st.session_state.get('det_resp', 0.5))
     with col2:
-        d_gain = st.number_input("TIA Gain (V/A)", value=1e6, format="%.2e", key="det_gain")
-        d_input_mode = st.radio("Noise Source", ["Live Capture", "Manual Entry"], horizontal=True)
+        d_gain = st.number_input("TIA Gain (V/A)", format="%.2e", key="det_gain", value=st.session_state.get('det_gain', 1e6))
+        d_input_mode = st.radio("Noise Source", ["Live Capture", "Manual Entry"], horizontal=True, key="det_input_mode")
 
     st.divider()
     
@@ -389,7 +421,7 @@ with detect_tab:
         with mcol2:
             det_coupling = st.selectbox("Coupling", ["AC", "DC"], index=0, key="det_coup")
         with mcol3:
-            det_duration = st.number_input("Duration (s)", value=1.0, step=0.5, key="det_dur")
+            det_duration = st.number_input("Duration (s)", step=0.5, key="det_dur", value=st.session_state.get('det_dur', 1.0))
             
         if st.button("Measure Detector Noise", type="primary", key="det_meas_btn"):
             with st.spinner("Capturing Noise..."):
