@@ -97,7 +97,8 @@ def calculate_snr_fft(
     # (Using a few bins to account for minor frequency drift or finite window resolution)
     start_bin = max(0, idx - rbw_bins)
     end_bin = min(len(mag_sq), idx + rbw_bins + 1)
-    signal_power = np.sum(mag_sq[start_bin:end_bin])
+    n_bins_signal = end_bin - start_bin
+    total_peak_power = np.sum(mag_sq[start_bin:end_bin])
     
     # Noise Floor Power: Average level in the vicinity (excluding the signal peak)
     # Take a 10% frequency span or at least 50 bins
@@ -117,22 +118,24 @@ def calculate_snr_fft(
     if len(noise_bins) == 0:
         return 0.0
         
-    avg_noise_power = np.median(noise_bins)
+    avg_noise_power_per_bin = np.median(noise_bins)
     
-    # Scale correction: For Rayleigh distributed noise (magnitude), median is lower than mean.
-    # For Power (Chi-squared 2-DOF), Mean = Median / ln(2) approx?
-    # Actually, for estimating the floor level of white noise, median is a robust estimator.
-    # Let's stick to median as "Representative Noise Floor Level".
-    
-    if avg_noise_power < 1e-15: # Floor
-        return signal_power / 1e-15
+    if avg_noise_power_per_bin < 1e-25: # Floor
+        return total_peak_power / 1e-25
         
-    # We want SNR = Signal Energy / Noise Energy per bin? 
-    # Or Peak/Floor? The user likely wants Peak/Floor ratio.
-    # Signal Power calculated above is Sum of bins (Total Signal Energy).
-    # Noise Power above is per-bin median.
+    # --- REFINE SNR CALCULATION ---
+    # The user observed that summing M bins of noise gives SNR ~ M if we don't normalize.
+    # Correct Integrated SNR = (Signal Energy) / (Expected Noise Energy in same band)
+    # Signal Energy = Sum(Peak Bins) - M * (Noise per bin) [Optional: Subtracting baseline makes it 0 for noise]
+    # SNR (Ratio) = Total Peak Energy / (M * Noise floor per bin)
     
-    snr = signal_power / avg_noise_power
+    expected_noise_energy = n_bins_signal * avg_noise_power_per_bin
+    
+    # We use a cautious "Excess Power" approach:
+    # SNR = (Integrated_Power) / (Expected_Noise_Power_in_Band)
+    # If it's just noise, this ratio will be approximately 1.0.
+    snr = total_peak_power / expected_noise_energy
+    
     return float(snr)
 
 def calculate_lockin_amplitude(voltage: np.ndarray, fs: float, target_freq: float) -> float:
@@ -219,21 +222,24 @@ def calculate_robust_snr(voltage: np.ndarray, fs: float, target_freq: float) -> 
     
     # 3. Bandwidth (ENBW)
     # The relevant bandwidth is the Effective Noise Bandwidth of the Lock-In Filter.
-    # We are effectively averaging over the entire duration T.
-    # For a boxcar average of time T, ENBW approx 1 / (2 * T).
-    # Bin Width (fs/N) = 1/T. So ENBW is approx half of bin width?
-    # Let's use 1 / (2 * duration) as a conservative estimate for "Spot" bandwidth.
+    # For a complex IQ demodulation followed by a mean over duration T:
+    # The noise variance in V_rms^2 is 2 * (n^2 / (2T)) + ...?
+    # As derived: E[V_rms^2] from noise density n is (2 * n^2) / T.
     
     duration = len(voltage) / fs
-    enbw = 1.0 / (2.0 * duration)
+    enbw = 2.0 / duration # Effective noise bandwidth for the RMS estimator
     
-    if v_n_density < 1e-12: return 1000.0 # High SNR Cap
+    if v_n_density < 1e-18: return 1000.0 # High SNR Cap
     
     # Power Ratio
-    signal_power = v_rms**2
-    noise_power_in_band = v_n_density**2 * enbw
+    signal_power_total = v_rms**2
+    noise_power_in_band = (v_n_density**2) * enbw
     
-    return signal_power / noise_power_in_band
+    # SNR = Total Power / Noise Power
+    # For pure noise, this should hover around 1.0.
+    snr = signal_power_total / noise_power_in_band
+    
+    return float(snr)
 
 def calculate_johnson_noise(resistance_ohms: float, temp_k: float = 300.0) -> float:
     """

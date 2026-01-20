@@ -12,6 +12,7 @@ from scipy.interpolate import interp1d
 # Imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from analysis.calibration import CalibrationManager
+import analysis.signal_processing as signal_processing
 from utils.settings_manager import SettingsManager
 from utils.ui_components import render_global_sidebar
 
@@ -291,124 +292,241 @@ with tab_ldr:
                     
                     all_dut_dfs.append(df_segment)
                 
-                if not all_dut_dfs:
-                    st.error("No valid data processed.")
-                    st.stop()
-                    
                 df_dut = pd.concat(all_dut_dfs).sort_values(by='Optical_Power_W', ascending=False).reset_index(drop=True)
-                st.info(f"Stitched {len(all_dut_dfs)} curves into a master dataset with {len(df_dut)} unique points.")
-                if 'active_calibration_meta' in st.session_state:
-                    # --- LINEARITY FIT (Log-Log) ---
-                    valid_log = (df_dut['Optical_Power_W'] > 0) & (df_dut['Photocurrent_A'].abs() > 0)
-                    df_log = df_dut[valid_log].copy()
-                    
-                    if len(df_log) >= 2:
-                        lx = np.log10(df_log['Optical_Power_W'].values)
-                        ly = np.log10(df_log['Photocurrent_A'].abs().values)
-                        alpha, c_log = np.polyfit(lx, ly, 1) # Log-log slope
-                        
-                        # --- DYNAMIC RANGE (dB) ---
-                        p_max, p_min = df_log['Optical_Power_W'].max(), df_log['Optical_Power_W'].min()
-                        dr_db = 10 * np.log10(p_max / p_min)
-                        
-                        # --- RESULTS METRICS ---
-                        k1, k2, k3, k4 = st.columns(4)
-                        k1.metric("Linearity Slope (α)", f"{alpha:.4f}", help="Ideal slope is 1.0 (I proportional to P).")
-                        k2.metric("Dyn. Range", f"{dr_db:.1f} dB", help="10 * log10(Pmax / Pmin)")
-                        
-                        # Global Responsivity (Linear fit)
-                        x_lin = df_log['Optical_Power_W'].values
-                        y_lin = df_log['Photocurrent_A'].abs().values
-                        slope_r = np.sum(x_lin * y_lin) / np.sum(x_lin**2)
-                        k3.metric("Avg Responsivity", f"{slope_r:.4f} A/W")
-                        
-                        # --- NEP & DETECTIVITY ANALYSIS ---
-                        # NEP = Noise_Current / Responsivity
-                        # D* = sqrt(Area) / NEP
-                        if 'Noise_Density_V_rtHz' in df_dut.columns and 'Resistance_Ohms' in df_dut.columns:
-                             df_dut['Current_Noise_A_rtHz'] = df_dut['Noise_Density_V_rtHz'] / df_dut['Resistance_Ohms']
-                             df_dut['NEP_W_rtHz'] = df_dut['Current_Noise_A_rtHz'] / slope_r
-                             df_dut['Detectivity_Jones'] = np.sqrt(dev_area) / df_dut['NEP_W_rtHz']
-                             
-                             min_nep_hz = df_dut['NEP_W_rtHz'].min()
-                             max_dstar = df_dut['Detectivity_Jones'].max()
-                             
-                             k4.metric("Best NEP (rtHz)", f"{min_nep_hz:.2e} W/√Hz")
-                             # We need more columns if we want to show both, for now let's add D* to k4 or add k5
-                        else:
-                             # Fallback to Sensitivity from sweep (SNR=3)
-                             min_nep = np.nan
-                             if 'Sensitivity_W_SNR3' in df_log.columns:
-                                  min_nep = df_log['Sensitivity_W_SNR3'].min()
-                             k4.metric("Best NEP (SNR=3)", f"{min_nep:.2e} W")
-                             max_dstar = np.nan
-
-                        if 'Detectivity_Jones' in df_dut.columns:
-                            st.metric("Peak Detectivity (D*)", f"{max_dstar:.2e} Jones", help="D* = sqrt(Area) / NEP")
-
-                        # --- PLOTS ---
-                        c_p1, c_p2 = st.columns(2)
-                        with c_p1:
-                            fig_ldr = px.scatter(df_dut, x="Optical_Power_W", y="Photocurrent_A", 
-                                                 color="DUT_Segment",
-                                                 log_x=True, log_y=True,
-                                                 title="Stitched LDR: Photocurrent vs Power")
-                            
-                            # Add Common Fit Line
-                            x_fit = np.geomspace(df_dut['Optical_Power_W'].min(), df_dut['Optical_Power_W'].max(), 100)
-                            y_fit = (10**c_log) * (x_fit**alpha)
-                            fig_ldr.add_trace(go.Scatter(x=x_fit, y=y_fit, mode='lines', 
-                                                       name=f'Global Fit (α={alpha:.3f})',
-                                                       line=dict(dash='dash', color='magenta')))
-                            
-                            st.plotly_chart(fig_ldr, use_container_width=True)
-                            
-                        with c_p2:
-                             # Plot Linearity
-                             df_dut['Normalized_Responsivity'] = (df_dut['Photocurrent_A'].abs() / df_dut['Optical_Power_W']) / slope_r
-                             fig_lin = px.scatter(df_dut, x="Optical_Power_W", y="Normalized_Responsivity", 
-                                                 log_x=True, color="DUT_Segment",
-                                                 title="Linearity: R / <R>")
-                             fig_lin.add_hline(y=1.0, line_dash="dash", line_color="tomato")
-                             st.plotly_chart(fig_lin, use_container_width=True)
-                         
-                        c_p3, c_p4 = st.columns(2)
-                        with c_p3:
-                            if 'NEP_W_rtHz' in df_dut.columns:
-                                fig_nep = px.scatter(df_dut, x="Optical_Power_W", y="NEP_W_rtHz",
-                                                     log_x=True, log_y=True, color="DUT_Segment",
-                                                     title="NEP vs Optical Power")
-                                st.plotly_chart(fig_nep, use_container_width=True)
-                        with c_p4:
-                            if 'Detectivity_Jones' in df_dut.columns:
-                                fig_dstar = px.scatter(df_dut, x="Optical_Power_W", y="Detectivity_Jones",
-                                                      log_x=True, log_y=True, color="DUT_Segment",
-                                                      title="Detectivity (D*) vs Optical Power")
-                                st.plotly_chart(fig_dstar, use_container_width=True)
-                              
-                        st.info(f"**LDR Model Fit:** $I_{{ph}} = {10**c_log:.2e} \\cdot P^{{{alpha:.3f}}}$")
-                        
-                        with st.expander("Combined Data Table"):
-                            st.dataframe(df_dut.style.format({
-                                "LED_Current_A": "{:.2e}",
-                                "Optical_Power_W": "{:.2e}",
-                                "Photocurrent_A": "{:.2e}",
-                                "Current_Density_A_cm2": "{:.2e}",
-                                "Si_Photocurrent_Density_A_cm2": "{:.2e}",
-                                "DUT_OD": "{:.1f}",
-                                "NEP_W_rtHz": "{:.2e}",
-                                "Detectivity_Jones": "{:.2e}",
-                                "Noise_Density_V_rtHz": "{:.2e}",
-                                "Resistance_Ohms": "{:.0f}"
-                            }, na_rep="-"))
-                    else:
-                        st.warning("Not enough data points for linearity fit.")
-                else:
-                    st.warning("No calibration active. Plotting raw Photocurrent vs LED Current.")
-                    fig = px.scatter(df_dut, x="LED_Current_A", y="Photocurrent_A", color="DUT_Segment", log_x=True, log_y=True)
-                    st.plotly_chart(fig)
+                st.session_state.df_ldr = df_dut # Persist for slider interactions
+                st.success(f"Stitched {len(all_dut_dfs)} curves into a master dataset with {len(df_dut)} unique points.")
             except Exception as e:
-                st.error(f"Analysis Failed: {e}")
+                st.error(f"Error during analysis: {e}")
+
+    # --- RESULTS & PLOTTING (Outside button, relies on session state) ---
+    if 'df_ldr' in st.session_state:
+        df_dut = st.session_state.df_ldr
+        if 'active_calibration_meta' in st.session_state:
+            # --- LINEARITY FIT (Log-Log) ---
+            valid_log = (df_dut['Optical_Power_W'] > 0) & (df_dut['Photocurrent_A'].abs() > 0)
+            df_log_full = df_dut[valid_log].copy()
+            
+            if len(df_log_full) >= 2:
+                # Sort by Power descending for selection
+                df_log_full = df_log_full.sort_values("Optical_Power_W", ascending=False)
+                
+                # Ensure fitness_n persistent value
+                max_pts = len(df_log_full)
+                if 'ldr_fit_n' not in st.session_state or st.session_state.ldr_fit_n > max_pts:
+                    st.session_state.ldr_fit_n = max_pts
+                    
+                fit_n = st.slider("Include Top N points in Linearity Fit", 
+                                 min_value=2, 
+                                 max_value=max_pts, 
+                                 value=st.session_state.ldr_fit_n,
+                                 key="ldr_fit_n_slider",
+                                 help="Select how many of the highest power points to use for the alpha (slope) fit.")
+                
+                # Sync state
+                st.session_state.ldr_fit_n = fit_n
+                df_log = df_log_full.head(fit_n)
+                
+                lx = np.log10(df_log['Optical_Power_W'].values)
+                ly = np.log10(df_log['Photocurrent_A'].abs().values)
+                alpha, c_log = np.polyfit(lx, ly, 1) # Log-log slope
+                
+                # --- DYNAMIC RANGE (dB) ---
+                p_max, p_min = df_log['Optical_Power_W'].max(), df_log['Optical_Power_W'].min()
+                dr_db = 10 * np.log10(p_max / p_min)
+                
+                # --- RESULTS METRICS ---
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric("Linearity Slope (α)", f"{alpha:.4f}", help="Ideal slope is 1.0.")
+                k2.metric("Dyn. Range", f"{dr_db:.1f} dB")
+                
+                # Global Responsivity (Linear fit)
+                x_lin = df_log['Optical_Power_W'].values
+                y_lin = df_log['Photocurrent_A'].abs().values
+                slope_r = np.sum(x_lin * y_lin) / np.sum(x_lin**2)
+                k3.metric("Avg Responsivity", f"{slope_r:.4f} A/W")
+                
+                # --- NEP & DETECTIVITY ANALYSIS ---
+                if 'Noise_Density_V_rtHz' in df_dut.columns and 'Resistance_Ohms' in df_dut.columns:
+                     df_dut['Current_Noise_A_rtHz'] = df_dut['Noise_Density_V_rtHz'] / df_dut['Resistance_Ohms']
+                     df_dut['NEP_W_rtHz'] = df_dut['Current_Noise_A_rtHz'] / slope_r
+                     df_dut['Detectivity_Jones'] = np.sqrt(dev_area) / df_dut['NEP_W_rtHz']
+                     
+                     min_nep_hz = df_dut['NEP_W_rtHz'].min()
+                     max_dstar = df_dut['Detectivity_Jones'].max()
+                     k4.metric("Best NEP (rtHz)", f"{min_nep_hz:.2e} W/√Hz")
+                else:
+                     min_nep = df_log['Sensitivity_W_SNR3'].min() if 'Sensitivity_W_SNR3' in df_log.columns else np.nan
+                     k4.metric("Best NEP (SNR=3)", f"{min_nep:.2e} W")
+                     max_dstar = np.nan
+
+                if 'Detectivity_Jones' in df_dut.columns:
+                    st.metric("Peak Detectivity (D*)", f"{max_dstar:.2e} Jones")
+
+                # --- PLOTS ---
+                c_p1, c_p2 = st.columns(2)
+                with c_p1:
+                    fig_ldr = px.scatter(df_dut, x="Optical_Power_W", y="Photocurrent_A", 
+                                         color="DUT_Segment", log_x=True, log_y=True,
+                                         title="Stitched LDR: Photocurrent vs Power")
+                    x_fit = np.geomspace(df_dut['Optical_Power_W'].min(), df_dut['Optical_Power_W'].max(), 100)
+                    y_fit = (10**c_log) * (x_fit**alpha)
+                    fig_ldr.add_trace(go.Scatter(x=x_fit, y=y_fit, mode='lines', 
+                                               name=f'Global Fit (α={alpha:.3f})',
+                                               line=dict(dash='dash', color='magenta')))
+                    st.plotly_chart(fig_ldr, use_container_width=True)
+                    
+                with c_p2:
+                     df_dut['Normalized_Responsivity'] = (df_dut['Photocurrent_A'].abs() / df_dut['Optical_Power_W']) / slope_r
+                     fig_lin = px.scatter(df_dut, x="Optical_Power_W", y="Normalized_Responsivity", 
+                                         log_x=True, color="DUT_Segment", title="Linearity: R / <R>")
+                     fig_lin.add_hline(y=1.0, line_dash="dash", line_color="tomato")
+                     st.plotly_chart(fig_lin, use_container_width=True)
+                 
+                c_p3, c_p4 = st.columns(2)
+                with c_p3:
+                    if 'NEP_W_rtHz' in df_dut.columns:
+                        fig_nep = px.scatter(df_dut, x="Optical_Power_W", y="NEP_W_rtHz",
+                                             log_x=True, log_y=True, color="DUT_Segment", title="NEP vs Optical Power")
+                        st.plotly_chart(fig_nep, use_container_width=True)
+                with c_p4:
+                    if 'Detectivity_Jones' in df_dut.columns:
+                        fig_dstar = px.scatter(df_dut, x="Optical_Power_W", y="Detectivity_Jones",
+                                              log_x=True, log_y=True, color="DUT_Segment", title="Detectivity (D*) vs Optical Power")
+                        st.plotly_chart(fig_dstar, use_container_width=True)
+                
+                # Data Download
+                csv_data = df_dut.to_csv(index=False)
+                st.download_button("📥 Download Stitched LDR Data (CSV)", data=csv_data, file_name="ldr_stitched_results.csv", mime="text/csv")
+                st.info(f"**LDR Model Fit:** $I_{{ph}} = {10**c_log:.2e} \\cdot P^{{{alpha:.3f}}}$")
+                
+                with st.expander("Combined Data Table"):
+                    st.dataframe(df_dut.style.format({
+                        "LED_Current_A": "{:.2e}", "Optical_Power_W": "{:.2e}", "Photocurrent_A": "{:.2e}",
+                        "Current_Density_A_cm2": "{:.2e}", "Si_Photocurrent_Density_A_cm2": "{:.2e}",
+                        "DUT_OD": "{:.1f}", "NEP_W_rtHz": "{:.2e}", "Detectivity_Jones": "{:.2e}",
+                        "Noise_Density_V_rtHz": "{:.2e}", "Resistance_Ohms": "{:.0f}"
+                    }, na_rep="-"))
+            else:
+                st.warning("Not enough data points for linearity fit.")
+        else:
+            st.warning("No calibration active. Plotting raw Photocurrent vs LED Current.")
+            fig = px.scatter(df_dut, x="LED_Current_A", y="Photocurrent_A", color="DUT_Segment", log_x=True, log_y=True)
+            st.plotly_chart(fig, use_container_width=True)
+    
+    # --- Advanced: Batch Re-analysis ---
+    st.divider()
+    with st.expander("🛠️ Advanced: Re-calculate SNR/Amplitude from Raw Traces"):
+        st.markdown("""
+        If your measurement results have 'Wrong SNR' due to 50Hz pickup, use this tool to re-reprocess the **raw trace files** 
+        using a specific **Target Frequency** and **Digital Lock-in**.
+        """)
+        
+        c_re1, c_re2 = st.columns(2)
+        with c_re1:
+            trace_folder = st.text_input("Folder containing Trace CSVs", value=settings.get("base_save_folder", "data"))
+            re_target_f = st.number_input("Target Analysis Frequency (Hz)", value=80.0, key="re_target_f")
+        with c_re2:
+            re_resistor = st.number_input("Gain (Resistor) (Ω)", value=47000.0, key="re_resistor")
+            save_re = st.checkbox("Save Re-calculated Results to CSV", value=True)
+            
+        if st.button("🚀 Run Batch Re-analysis"):
+            if not os.path.exists(trace_folder):
+                st.error("Folder not found.")
+            else:
+                trace_files = glob.glob(os.path.join(trace_folder, "trace_step_*.csv"))
+                if not trace_files:
+                    st.error("No 'trace_step_*.csv' files found in this folder.")
+                else:
+                    st.info(f"Checking for results file in `{trace_folder}`...")
+                    # Try to load resistor mapping from results file
+                    all_results_csvs = glob.glob(os.path.join(trace_folder, "*results*.csv"))
+                    results_csvs = [f for f in all_results_csvs if "recalculated" not in os.path.basename(f).lower()]
+                    
+                    results_df = None
+                    if results_csvs:
+                        try:
+                            # Use the most likely results file (the one that isn't re-calculated)
+                            results_csvs.sort(key=os.path.getmtime, reverse=True)
+                            target_csv = results_csvs[0]
+                            results_df = pd.read_csv(target_csv)
+                            
+                            if 'LED_Current_A' in results_df.columns and 'Resistance_Ohms' in results_df.columns:
+                                st.info(f"📂 Found results file: `{os.path.basename(target_csv)}`. Using **closest-match** strategy to identify gains.")
+                            else:
+                                results_df = None
+                                st.warning("Results file found but lacks 'LED_Current_A' or 'Resistance_Ohms' columns.")
+                        except Exception as e:
+                            st.warning(f"Could not load resistor mapping from results file: {e}")
+
+                    st.info(f"Processing {len(trace_files)} traces...")
+                    re_results = []
+                    progress_re = st.progress(0)
+                    
+                    for f_idx, f_path in enumerate(sorted(trace_files)):
+                        try:
+                            df_t = pd.read_csv(f_path)
+                            t_arr = df_t['time'].values
+                            v_arr = df_t['voltage'].values
+                            
+                            fs_re = 1.0 / np.mean(np.diff(t_arr))
+                            
+                            # Lock-in Amplitude
+                            l_rms = signal_processing.calculate_lockin_amplitude(v_arr, fs_re, re_target_f)
+                            # Noise Density
+                            n_dens_v = signal_processing.calculate_noise_density_sideband(v_arr, fs_re, re_target_f)
+                            # Robust SNR
+                            snr_rob = signal_processing.calculate_robust_snr(v_arr, fs_re, re_target_f)
+                            # FFT SNR
+                            snr_fft = signal_processing.calculate_snr_fft(v_arr, fs_re, re_target_f)
+                            
+                            # Extract Current from filename
+                            import re
+                            match = re.search(r"I([\d\.e\-\+]+)A", os.path.basename(f_path))
+                            i_led_target = float(match.group(1)) if match else 0.0
+                            
+                            # Gain Lookup: Find the LAST row in results_df where LED_Current_A matches i_led_target
+                            current_resistor = re_resistor
+                            if results_df is not None:
+                                # Define a tolerance (1% relative or 1pA absolute)
+                                tolerance = max(abs(i_led_target) * 0.01, 1e-12)
+                                # Find all rows within tolerance
+                                matches = results_df[np.abs(results_df['LED_Current_A'] - i_led_target) < tolerance]
+                                if not matches.empty:
+                                    # Pick the LAST match (corresponds to successful final measurement)
+                                    current_resistor = float(matches['Resistance_Ohms'].iloc[-1])
+                            
+                            re_results.append({
+                                "File": os.path.basename(f_path),
+                                "LED_Current_A": i_led_target,
+                                "LockIn_Amp_V": l_rms,
+                                "Resistance_Ohms": current_resistor,
+                                "Photocurrent_A": l_rms / current_resistor,
+                                "Noise_Density_V_rtHz": n_dens_v,
+                                "SNR_Broadband": snr_rob,
+                                "SNR_FFT": snr_fft,
+                                "SNR_Status": "OK"
+                            })
+                            progress_re.progress((f_idx + 1) / len(trace_files))
+                        except Exception as e:
+                            st.warning(f"Failed to process {f_path}: {e}")
+                    
+                    if re_results:
+                        df_re = pd.DataFrame(re_results).sort_values("LED_Current_A", ascending=False)
+                        st.success("Re-analysis Complete!")
+                        st.dataframe(df_re.style.format({
+                            "LED_Current_A": "{:.3e}",
+                            "LockIn_Amp_V": "{:.4e}",
+                            "Resistance_Ohms": "{:.1e}",
+                            "Photocurrent_A": "{:.4e}",
+                            "Noise_Density_V_rtHz": "{:.4e}",
+                            "SNR_Broadband": "{:.2f}",
+                            "SNR_FFT": "{:.2f}"
+                        }))
+                        
+                        if save_re:
+                            out_path = os.path.join(trace_folder, "recalculated_results.csv")
+                            df_re.to_csv(out_path, index=False)
+                            st.info(f"Saved to: {out_path}")
 
 # --- TAB 3: TRACE ANALYSIS ---
 with tab_trace:
@@ -430,6 +548,12 @@ with tab_trace:
     with c_t2:
         # Window
         fs_override = st.number_input("Sampling Rate Override (Hz)", value=0.0, help="Leave as 0.0 to Auto-Detect from time data.")
+    
+    c_t3, c_t4 = st.columns(2)
+    with c_t3:
+        target_freq = st.number_input("Target Signal Frequency (Hz)", value=settings.get("sweep_freq", 80.0), help="Digital lock-in will lock to this frequency.")
+    with c_t4:
+        st.info("💡 **Small Detector Note:** Setting a target frequency avoids errors where 50Hz mains noise is taken as the peak.")
         
     if st.button("Analyze Trace"):
         if not trace_file:
@@ -475,7 +599,24 @@ with tab_trace:
                 # 4. Convert to Current Noise Density (A / rtHz)
                 # I_n = V_n / R
                 asd_i = asd_v / load_res
+
+                # 5. Digital Lock-in Analysis
+                lock_in_rms = signal_processing.calculate_lockin_amplitude(v, fs, target_freq)
+                lock_in_current = lock_in_rms / load_res
                 
+                # Robust SNR (Lock-in / Sideband Noise)
+                robust_snr = signal_processing.calculate_robust_snr(v, fs, target_freq)
+                
+                # Standard FFT SNR
+                fft_snr = signal_processing.calculate_snr_fft(v, fs, target_freq)
+
+                # Display Results
+                st.subheader("🎯 Digital Lock-in Results")
+                k1, k2, k3 = st.columns(3)
+                k1.metric("Lock-in Ampltitude (RMS)", f"{lock_in_rms*1000:.3f} mV", f"{lock_in_current:.2e} A")
+                k2.metric("Robust SNR", f"{robust_snr:.1f}", help="Signal (Lock-in) / Noise Floor (Sideband)")
+                k3.metric("FFT SNR (Peak/Floor)", f"{fft_snr:.1f}")
+
                 # Plot PSD
                 df_psd = pd.DataFrame({
                     "Frequency (Hz)": freqs,
@@ -489,6 +630,14 @@ with tab_trace:
                 fig_psd = px.line(df_psd, x="Frequency (Hz)", y="Current Noise Density (A/√Hz)", 
                                   log_x=True, log_y=True, 
                                   title=f"Current Noise Spectral Density (Load = {load_res} Ω)")
+                
+                # Add target frequency marker
+                fig_psd.add_vline(x=target_freq, line_dash="dash", line_color="green", 
+                                  annotation_text=f"Target: {target_freq}Hz")
+                # Add 50Hz marker
+                fig_psd.add_vline(x=50.0, line_dash="dot", line_color="orange", 
+                                  annotation_text="50Hz Noise")
+                
                 st.plotly_chart(fig_psd, use_container_width=True)
                 
             except Exception as e:
