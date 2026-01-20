@@ -168,9 +168,10 @@ def calculate_lockin_amplitude(voltage: np.ndarray, fs: float, target_freq: floa
     # Return RMS
     return v_peak / np.sqrt(2)
 
-def calculate_noise_density_sideband(voltage: np.ndarray, fs: float, target_freq: float) -> float:
+def calculate_noise_density_sideband(voltage: np.ndarray, fs: float, target_freq: float, mask_freqs: list = None) -> float:
     """
     Estimates noise density (V/rtHz) by looking at sidebands around target freq.
+    Optional mask_freqs allows excluding interference peaks (e.g. 50Hz).
     """
     # Use Full Length for resolution
     f, pxx = signal.welch(voltage, fs, nperseg=len(voltage), window='hann')
@@ -190,24 +191,44 @@ def calculate_noise_density_sideband(voltage: np.ndarray, fs: float, target_freq
     start_bin = max(0, idx_target - roi_width_bins)
     end_bin = min(len(f), idx_target + roi_width_bins)
     
-    # Mask out the signal peak
+    # Masking Logic
     mask = np.ones(end_bin - start_bin, dtype=bool)
-    # Center relative
-    center = idx_target - start_bin
+    bin_indices = np.arange(start_bin, end_bin)
     
-    m_start = max(0, center - exclusion_bins)
-    m_end = min(len(mask), center + exclusion_bins + 1)
-    mask[m_start : m_end] = False
+    # 1. Mask out the signal peak
+    center = idx_target
+    m_start = center - exclusion_bins
+    m_end = center + exclusion_bins
+    peak_mask = (bin_indices >= m_start) & (bin_indices <= m_end)
+    mask[peak_mask] = False
+    
+    # 2. Mask out interference frequencies (e.g. 50Hz/60Hz)
+    if mask_freqs:
+        for mf in mask_freqs:
+            # Mask out the fundamental and first 3 harmonics
+            for harmonic in [1, 2, 3]:
+                h_freq = mf * harmonic
+                # Use a narrower exclusion for noise peaks (e.g. +/- 2Hz)
+                h_idx = np.argmin(np.abs(f - h_freq))
+                h_width_bins = int(2.0 / max(bin_width, 1e-6))
+                h_mask = (bin_indices >= h_idx - h_width_bins) & (bin_indices <= h_idx + h_width_bins)
+                mask[h_mask] = False
     
     roi_pxx = pxx[start_bin:end_bin][mask]
     
     if len(roi_pxx) == 0:
-        return 1e-9 # Fallback
+        # Fallback to just anything outside the main peak if masking was too aggressive
+        mask_fallback = np.ones(end_bin - start_bin, dtype=bool)
+        mask_fallback[peak_mask] = False
+        roi_pxx = pxx[start_bin:end_bin][mask_fallback]
+        
+    if len(roi_pxx) == 0:
+        return 1e-9 # Hard fallback
         
     avg_noise_power_density = np.median(roi_pxx) # V^2/Hz
     return np.sqrt(avg_noise_power_density)
 
-def calculate_robust_snr(voltage: np.ndarray, fs: float, target_freq: float) -> float:
+def calculate_robust_snr(voltage: np.ndarray, fs: float, target_freq: float, mask_freqs: list = None) -> float:
     """
     Calculates SNR using Lock-In Amplitude / Sideband Noise.
     SNR = (Signal_RMS**2) / (Noise_Density**2 * BinWidth)
@@ -217,8 +238,8 @@ def calculate_robust_snr(voltage: np.ndarray, fs: float, target_freq: float) -> 
     # 1. Signal RMS
     v_rms = calculate_lockin_amplitude(voltage, fs, target_freq)
     
-    # 2. Noise Density
-    v_n_density = calculate_noise_density_sideband(voltage, fs, target_freq)
+    # 2. Noise Density (with optional masking)
+    v_n_density = calculate_noise_density_sideband(voltage, fs, target_freq, mask_freqs=mask_freqs)
     
     # 3. Bandwidth (ENBW)
     # The relevant bandwidth is the Effective Noise Bandwidth of the Lock-In Filter.

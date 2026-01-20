@@ -172,14 +172,17 @@ with tab_ldr:
     with c_dut_area:
         dev_area = st.number_input("Device Active Area (cm²)", format="%.4f", key="p_dut_area", value=st.session_state.p_dut_area, on_change=sync_setting, args=("p_dut_area", "last_dut_area"))
     with c_dut_mode:
-        map_mode = st.radio("Calibration Mapping Mode", options=["Interpolation", "Power Law Fit"], index=0, help="Interpolation ensures perfect consistency for measured points. Power Law Fit is better for noisy data or extrapolation.")
+        t_int_ldr = st.number_input("Integration Time (s)", min_value=0.01, max_value=100.0, value=1.0, help="Duration of the measurement trace. Used to calculate Noise-Limited LDR.")
     
     st.divider()
     dut_entries = []
     has_cal = 'active_calibration_meta' in st.session_state
     
+    # Move Mapping Mode to a dedicated row to free up space for t_int
+    map_mode = st.radio("Calibration Mapping Mode", options=["Interpolation", "Power Law Fit"], index=0, horizontal=True)
+    
     for i in range(num_dut):
-        cd1, cd2, cd3 = st.columns([3, 1, 1])
+        cd1, cd2, cd3, cd4 = st.columns([3, 1, 1, 1])
         with cd1:
             row_file = st.selectbox(f"DUT File {i+1}", options=data_files, key=f"dut_file_{i}")
         with cd2:
@@ -190,7 +193,10 @@ with tab_ldr:
                 row_seg = st.selectbox(f"Cal Match {i+1}", options=seg_opts, key=f"dut_seg_{i}", help="Choose which calibration run this measurement matches.")
             else:
                 row_seg = 1
-        dut_entries.append({'file': row_file, 'od': row_od, 'cal_seg': row_seg})
+        with cd4:
+            row_scale = st.number_input(f"P-Scale {i+1}", min_value=0.01, max_value=10.0, step=0.01, value=1.0, key=f"dut_scale_{i}", help="Optical power correction multiplier to align segments.")
+            
+        dut_entries.append({'file': row_file, 'od': row_od, 'cal_seg': row_seg, 'scale': row_scale})
     
     if st.button("Analyze LDR Data"):
         if not any(e['file'] for e in dut_entries):
@@ -288,7 +294,7 @@ with tab_ldr:
                             # Si Reference Density
                             df_segment['Si_Photocurrent_Density_A_cm2'] = (p_meas_at_cal * meta.get('r_ref', 1.0)) / ref_area_val
                         
-                        df_segment['Optical_Power_W'] = p_dut
+                        df_segment['Optical_Power_W'] = p_dut * entry.get('scale', 1.0)
                     
                     all_dut_dfs.append(df_segment)
                 
@@ -353,7 +359,14 @@ with tab_ldr:
                      
                      min_nep_hz = df_dut['NEP_W_rtHz'].min()
                      max_dstar = df_dut['Detectivity_Jones'].max()
+                     
+                     # Calculate Noise-Limited LDR (SNR=1)
+                     enbw = 2.0 / t_int_ldr
+                     p_snr1 = min_nep_hz * np.sqrt(enbw)
+                     dr_noise_db = 10 * np.log10(p_max / p_snr1)
+                     
                      k4.metric("Best NEP (rtHz)", f"{min_nep_hz:.2e} W/√Hz")
+                     st.metric("Noise-Limited LDR (SNR=1)", f"{dr_noise_db:.1f} dB", help=f"10*log10(Pmax / P_snr1). P_snr1 = {p_snr1:.2e} W at BW = {enbw:.2f} Hz ({t_int_ldr}s integration).")
                 else:
                      min_nep = df_log['Sensitivity_W_SNR3'].min() if 'Sensitivity_W_SNR3' in df_log.columns else np.nan
                      k4.metric("Best NEP (SNR=3)", f"{min_nep:.2e} W")
@@ -395,8 +408,45 @@ with tab_ldr:
                         st.plotly_chart(fig_dstar, use_container_width=True)
                 
                 # Data Download
-                csv_data = df_dut.to_csv(index=False)
-                st.download_button("📥 Download Stitched LDR Data (CSV)", data=csv_data, file_name="ldr_stitched_results.csv", mime="text/csv")
+                c_dl1, c_dl2 = st.columns(2)
+                
+                with c_dl1:
+                    # Specialized Export for Origin (Raw XY + Fit XY)
+                    x_meas = df_dut['Optical_Power_W'].values
+                    y_meas = df_dut['Photocurrent_A'].abs().values
+                    x_fit_pts = np.geomspace(df_dut['Optical_Power_W'].min(), df_dut['Optical_Power_W'].max(), 100)
+                    y_fit_pts = (10**c_log) * (x_fit_pts**alpha)
+                    
+                    max_len = max(len(x_meas), len(x_fit_pts))
+                    def pad(arr, length):
+                        return np.pad(arr.astype(float), (0, length - len(arr)), constant_values=np.nan)
+
+                    # Create a clean XY XY dataframe for easy copy-paste into Origin
+                    df_origin = pd.DataFrame({
+                        "Power_Meas_W": pad(x_meas, max_len),
+                        "Photocurrent_Meas_A": pad(y_meas, max_len),
+                        "Power_Fit_Line_W": pad(x_fit_pts, max_len),
+                        "Photocurrent_Fit_Line_A": pad(y_fit_pts, max_len)
+                    })
+                    
+                    csv_origin = df_origin.to_csv(index=False)
+                    st.download_button("📊 Export for Origin (XY, XY Fit)", 
+                                     data=csv_origin, 
+                                     file_name=f"ldr_origin_plot_alpha_{alpha:.3f}.csv", 
+                                     mime="text/csv",
+                                     use_container_width=True,
+                                     type="primary",
+                                     help="4-column CSV: [Measured Power, Measured Current, Fit Power, Fit Current]. Perfect for Origin.")
+
+                with c_dl2:
+                    csv_full = df_dut.to_csv(index=False)
+                    st.download_button("📥 Download Full Stitched Results", 
+                                     data=csv_full, 
+                                     file_name="ldr_full_stitched_results.csv", 
+                                     mime="text/csv",
+                                     use_container_width=True,
+                                     help="Complete dataset with all intermediate columns (SNR, Resistance, etc.)")
+
                 st.info(f"**LDR Model Fit:** $I_{{ph}} = {10**c_log:.2e} \\cdot P^{{{alpha:.3f}}}$")
                 
                 with st.expander("Combined Data Table"):
@@ -425,9 +475,11 @@ with tab_ldr:
         with c_re1:
             trace_folder = st.text_input("Folder containing Trace CSVs", value=settings.get("base_save_folder", "data"))
             re_target_f = st.number_input("Target Analysis Frequency (Hz)", value=80.0, key="re_target_f")
-        with c_re2:
             re_resistor = st.number_input("Gain (Resistor) (Ω)", value=47000.0, key="re_resistor")
             save_re = st.checkbox("Save Re-calculated Results to CSV", value=True)
+            mask_re = st.checkbox("Mask Power-Line peaks (50/60Hz)", value=True, help="Ignore 50Hz, 60Hz and harmonics from noise floor estimation.")
+            
+        mask_list_re = [50.0, 60.0] if mask_re else None
             
         if st.button("🚀 Run Batch Re-analysis"):
             if not os.path.exists(trace_folder):
@@ -473,9 +525,9 @@ with tab_ldr:
                             # Lock-in Amplitude
                             l_rms = signal_processing.calculate_lockin_amplitude(v_arr, fs_re, re_target_f)
                             # Noise Density
-                            n_dens_v = signal_processing.calculate_noise_density_sideband(v_arr, fs_re, re_target_f)
+                            n_dens_v = signal_processing.calculate_noise_density_sideband(v_arr, fs_re, re_target_f, mask_freqs=mask_list_re)
                             # Robust SNR
-                            snr_rob = signal_processing.calculate_robust_snr(v_arr, fs_re, re_target_f)
+                            snr_rob = signal_processing.calculate_robust_snr(v_arr, fs_re, re_target_f, mask_freqs=mask_list_re)
                             # FFT SNR
                             snr_fft = signal_processing.calculate_snr_fft(v_arr, fs_re, re_target_f)
                             
@@ -553,7 +605,9 @@ with tab_trace:
     with c_t3:
         target_freq = st.number_input("Target Signal Frequency (Hz)", value=settings.get("sweep_freq", 80.0), help="Digital lock-in will lock to this frequency.")
     with c_t4:
-        st.info("💡 **Small Detector Note:** Setting a target frequency avoids errors where 50Hz mains noise is taken as the peak.")
+        mask_trace = st.checkbox("Mask Power-Line peaks (50/60Hz)", value=True, key="mask_trace", help="Ignore peaks at 50Hz, 60Hz and harmonics from noise floor estimation.")
+        
+    mask_list_trace = [50.0, 60.0] if mask_trace else None
         
     if st.button("Analyze Trace"):
         if not trace_file:
@@ -605,7 +659,7 @@ with tab_trace:
                 lock_in_current = lock_in_rms / load_res
                 
                 # Robust SNR (Lock-in / Sideband Noise)
-                robust_snr = signal_processing.calculate_robust_snr(v, fs, target_freq)
+                robust_snr = signal_processing.calculate_robust_snr(v, fs, target_freq, mask_freqs=mask_list_trace)
                 
                 # Standard FFT SNR
                 fft_snr = signal_processing.calculate_snr_fft(v, fs, target_freq)
