@@ -1,5 +1,6 @@
 import numpy as np
 from scipy import signal
+import pandas as pd
 from typing import Tuple, Optional, Dict
 
 def calculate_psd(
@@ -352,4 +353,51 @@ def extract_valid_pulse_train(
         
     # 4. Return Slice
     return times[s:e], volts[s:e]
+
+def load_noise_trace_csv(file_or_path) -> Tuple[Optional[pd.DataFrame], Dict]:
+    """
+    Loads a noise trace CSV file that has metadata stored in comments (starting with #).
+    
+    Returns:
+        (df, metadata): df is the pandas DataFrame, metadata is a dict of key-value pairs.
+    """
+    import pandas as pd
+    import io
+    
+    metadata = {}
+    
+    # Handle both file path and uploaded file object
+    if isinstance(file_or_path, str):
+        with open(file_or_path, 'r') as f:
+            lines = f.readlines()
+    else:
+        # Streamlit uploaded file
+        content = file_or_path.getvalue().decode("utf-8")
+        lines = content.splitlines()
+        
+    data_lines = []
+    for line in lines:
+        if line.startswith('#'):
+            # Parse metadata
+            parts = line[1:].split(':', 1)
+            if len(parts) == 2:
+                key = parts[0].strip()
+                val = parts[1].strip()
+                # Try to convert to float if possible
+                try:
+                    if '.' in val or 'e' in val.lower():
+                        metadata[key] = float(val)
+                    else:
+                        metadata[key] = int(val)
+                except:
+                    metadata[key] = val
+        else:
+            data_lines.append(line)
+            
+    if not data_lines:
+        return None, metadata
+        
+    df = pd.read_csv(io.StringIO("\n".join(data_lines)))
+    return df, metadata
+
 

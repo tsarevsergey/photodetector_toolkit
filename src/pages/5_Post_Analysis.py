@@ -104,6 +104,10 @@ with tab_cal:
     with c_set2:
         ref_area = st.number_input("Reference Diode Active Area (cm²)", format="%.4f", key="p_ref_area", value=st.session_state.p_ref_area, on_change=sync_setting, args=("p_ref_area", "last_ref_area"))
     
+    c_set3, c_set4 = st.columns(2)
+    with c_set3:
+        cal_duty = st.number_input("Calibration Duty Cycle (%)", min_value=0.1, max_value=100.0, value=50.0, help="The duty cycle used during the LED calibration sweep.")
+    
     if st.button("Generate Calibration Curve", type="primary"):
         if not ref_file or not any(e['file'] for e in cal_entries):
             st.error("Please select valid files.")
@@ -122,6 +126,7 @@ with tab_cal:
                     'wl': cal_wl, 'r_ref': r_val, 
                     'fit_A_glob': A_glob, 'fit_B_glob': B_glob, 'fit_r2_glob': r2_glob, 
                     'ref_area': ref_area,
+                    'cal_duty': cal_duty / 100.0, # Store as decimal
                     'segment_fits': segment_fits
                 }
                 
@@ -173,6 +178,14 @@ with tab_ldr:
         dev_area = st.number_input("Device Active Area (cm²)", format="%.4f", key="p_dut_area", value=st.session_state.p_dut_area, on_change=sync_setting, args=("p_dut_area", "last_dut_area"))
     with c_dut_mode:
         t_int_ldr = st.number_input("Integration Time (s)", min_value=0.01, max_value=100.0, value=1.0, help="Duration of the measurement trace. Used to calculate Noise-Limited LDR.")
+    
+    c_ldr1, c_ldr2 = st.columns(2)
+    with c_ldr1:
+        ldr_duty = st.number_input("Measurement Duty Cycle (%)", min_value=0.1, max_value=100.0, value=50.0, help="The duty cycle used during the DUT LDR sweep.")
+    with c_ldr2:
+        x_axis_mode = st.selectbox("X-Axis Units", 
+                                  options=["Average Power (W)", "Peak Power (W)", "Average Irradiance (W/cm²)", "Peak Irradiance (W/cm²)"],
+                                  index=0)
     
     st.divider()
     dut_entries = []
@@ -242,6 +255,27 @@ with tab_ldr:
                         if map_mode == "Interpolation" and 'segment_fits' in meta and cal_seg in meta['segment_fits']:
                             seg_info = meta['segment_fits'][cal_seg]
                             cal_od = seg_info['od']
+                            
+                            # DUT Power Correction Factors (Fourier)
+                            # P_rms_fund = P_peak * sqrt(2) * sin(pi*D) / pi
+                            # -> P_peak = P_rms_fund * pi / (sqrt(2) * sin(pi*D))
+                            
+                            d_cal = meta.get('cal_duty', 0.5)
+                            d_dut = ldr_duty / 100.0
+                            
+                            # Scale factor from "RMS Fund (at D_cal)" back to Peak
+                            f_peak_cal = np.pi / (np.sqrt(2) * np.sin(np.pi * d_cal))
+                            
+                            # Scale factor from Peak to target unit
+                            f_target = 1.0
+                            if "Peak" in x_axis_mode:
+                                f_target = 1.0
+                            else: # Average
+                                f_target = d_dut
+                                
+                            if "Irradiance" in x_axis_mode:
+                                f_target /= ref_area_val # Scale to W/cm2
+                                
                             c_cal = np.array(seg_info['currents'])
                             p_cal = np.array(seg_info['powers'])
                             A_extrap = seg_info['A_meas']
@@ -272,7 +306,8 @@ with tab_ldr:
                                 # Fallback to fit only
                                 p_meas_at_cal = A_extrap * (dut_currents.clip(min=0) ** B_extrap)
                                 
-                            p_dut = p_meas_at_cal * (10**(cal_od - dut_od)) * (dev_area / ref_area_val)
+                            p_peak_led = p_meas_at_cal * f_peak_cal
+                            p_dut = p_peak_led * f_target * (10**(cal_od - dut_od)) * (dev_area / ref_area_val if "Power" in x_axis_mode else 1.0)
                             
                             # Si Reference Density (at this LED current, through the filter)
                             # Current = Power * Responsivity
@@ -289,12 +324,23 @@ with tab_ldr:
                                 cal_od = meta['segment_fits'][cal_seg]['od']
                             
                             p_meas_at_cal = A_fit * (df_segment['LED_Current_A'].values.clip(min=0) ** B_fit)
-                            p_dut = p_meas_at_cal * (10**(cal_od - dut_od)) * (dev_area / ref_area_val)
+                            
+                            p_peak_led = p_meas_at_cal * (np.pi / (np.sqrt(2) * np.sin(np.pi * meta.get('cal_duty', 0.5))))
+                            
+                            f_target = 1.0
+                            if "Peak" in x_axis_mode: f_target = 1.0
+                            else: f_target = (ldr_duty / 100.0)
+                            
+                            if "Irradiance" in x_axis_mode:
+                                f_target /= ref_area_val
+                                
+                            p_dut = p_peak_led * f_target * (10**(cal_od - dut_od)) * (dev_area / ref_area_val if "Power" in x_axis_mode else 1.0)
                             
                             # Si Reference Density
                             df_segment['Si_Photocurrent_Density_A_cm2'] = (p_meas_at_cal * meta.get('r_ref', 1.0)) / ref_area_val
                         
                         df_segment['Optical_Power_W'] = p_dut * entry.get('scale', 1.0)
+                        df_segment['X_Axis_Label'] = x_axis_mode
                     
                     all_dut_dfs.append(df_segment)
                 
@@ -375,12 +421,15 @@ with tab_ldr:
                 if 'Detectivity_Jones' in df_dut.columns:
                     st.metric("Peak Detectivity (D*)", f"{max_dstar:.2e} Jones")
 
+                x_label = df_dut['X_Axis_Label'].iloc[0] if 'X_Axis_Label' in df_dut.columns else "Optical Power (W)"
+                
                 # --- PLOTS ---
                 c_p1, c_p2 = st.columns(2)
                 with c_p1:
                     fig_ldr = px.scatter(df_dut, x="Optical_Power_W", y="Photocurrent_A", 
                                          color="DUT_Segment", log_x=True, log_y=True,
-                                         title="Stitched LDR: Photocurrent vs Power")
+                                         labels={"Optical_Power_W": x_label, "Photocurrent_A": "Photocurrent (A)"},
+                                         title=f"Stitched LDR: Photocurrent vs {x_label.split(' (')[0]}")
                     x_fit = np.geomspace(df_dut['Optical_Power_W'].min(), df_dut['Optical_Power_W'].max(), 100)
                     y_fit = (10**c_log) * (x_fit**alpha)
                     fig_ldr.add_trace(go.Scatter(x=x_fit, y=y_fit, mode='lines', 
@@ -389,22 +438,28 @@ with tab_ldr:
                     st.plotly_chart(fig_ldr, use_container_width=True)
                     
                 with c_p2:
-                     df_dut['Normalized_Responsivity'] = (df_dut['Photocurrent_A'].abs() / df_dut['Optical_Power_W']) / slope_r
-                     fig_lin = px.scatter(df_dut, x="Optical_Power_W", y="Normalized_Responsivity", 
-                                         log_x=True, color="DUT_Segment", title="Linearity: R / <R>")
-                     fig_lin.add_hline(y=1.0, line_dash="dash", line_color="tomato")
-                     st.plotly_chart(fig_lin, use_container_width=True)
+                    df_dut['Normalized_Responsivity'] = (df_dut['Photocurrent_A'].abs() / df_dut['Optical_Power_W']) / slope_r
+                    fig_lin = px.scatter(df_dut, x="Optical_Power_W", y="Normalized_Responsivity", 
+                                        log_x=True, color="DUT_Segment", 
+                                        labels={"Optical_Power_W": x_label, "Normalized_Responsivity": "R / <R>"},
+                                        title=f"Linearity (R/<R>) vs {x_label.split(' (')[0]}")
+                    fig_lin.add_hline(y=1.0, line_dash="dash", line_color="tomato")
+                    st.plotly_chart(fig_lin, use_container_width=True)
                  
                 c_p3, c_p4 = st.columns(2)
                 with c_p3:
                     if 'NEP_W_rtHz' in df_dut.columns:
                         fig_nep = px.scatter(df_dut, x="Optical_Power_W", y="NEP_W_rtHz",
-                                             log_x=True, log_y=True, color="DUT_Segment", title="NEP vs Optical Power")
+                                             log_x=True, log_y=True, color="DUT_Segment", 
+                                             labels={"Optical_Power_W": x_label, "NEP_W_rtHz": "NEP (W/√Hz)"},
+                                             title=f"Spectral NEP vs {x_label.split(' (')[0]}")
                         st.plotly_chart(fig_nep, use_container_width=True)
                 with c_p4:
                     if 'Detectivity_Jones' in df_dut.columns:
                         fig_dstar = px.scatter(df_dut, x="Optical_Power_W", y="Detectivity_Jones",
-                                              log_x=True, log_y=True, color="DUT_Segment", title="Detectivity (D*) vs Optical Power")
+                                              log_x=True, log_y=True, color="DUT_Segment", 
+                                              labels={"Optical_Power_W": x_label, "Detectivity_Jones": "D* (Jones)"},
+                                              title=f"Detectivity (D*) vs {x_label.split(' (')[0]}")
                         st.plotly_chart(fig_dstar, use_container_width=True)
                 
                 # Data Download
@@ -421,11 +476,15 @@ with tab_ldr:
                     def pad(arr, length):
                         return np.pad(arr.astype(float), (0, length - len(arr)), constant_values=np.nan)
 
+                    # Dynamic Column Names for Origin
+                    x_col_name = "Power" if "Power" in x_axis_mode else "Irradiance"
+                    x_unit_name = "W" if "Power" in x_axis_mode else "Wcm2"
+                    
                     # Create a clean XY XY dataframe for easy copy-paste into Origin
                     df_origin = pd.DataFrame({
-                        "Power_Meas_W": pad(x_meas, max_len),
+                        f"{x_col_name}_Meas_{x_unit_name}": pad(x_meas, max_len),
                         "Photocurrent_Meas_A": pad(y_meas, max_len),
-                        "Power_Fit_Line_W": pad(x_fit_pts, max_len),
+                        f"{x_col_name}_Fit_Line_{x_unit_name}": pad(x_fit_pts, max_len),
                         "Photocurrent_Fit_Line_A": pad(y_fit_pts, max_len)
                     })
                     

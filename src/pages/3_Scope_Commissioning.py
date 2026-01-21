@@ -284,31 +284,72 @@ with noise_tab:
     with n5:
         cal_duration = st.number_input("Cal Duration (s)", value=st.session_state.get('cal_dur', 1.0), step=0.5, key="cal_dur")
 
-    if st.button("Measure Noise Floor", type="primary"):
-        with st.spinner("Measuring Noise..."):
-             try:
-                # Config Scope: 100kS/s, Selected Coupling
-                scope.configure_channel('A', True, cal_range, cal_coupling)
-                # Block capture
-                sample_rate = 100000.0 # 100k is good bandwidth
-                num_samples = int(sample_rate * cal_duration)
-                
-                tb_idx = scope.calculate_timebase_index(cal_duration, num_samples)
-                
-                times, volts = scope.capture_block(tb_idx, num_samples)
-                
-                if len(times) > 0:
-                     st.session_state.cal_times = times
-                     st.session_state.cal_volts = volts
-                     st.session_state.cal_params = {
-                         'r_source': source_r_ohms,
-                         'gain': cal_gain
-                     }
-                     st.rerun()
+    st.divider()
+    c_btn1, c_btn2 = st.columns(2)
+    with c_btn1:
+        if st.button("Measure Noise Floor", type="primary", use_container_width=True):
+            with st.spinner("Measuring Noise..."):
+                try:
+                    # Config Scope: 100kS/s, Selected Coupling
+                    scope.configure_channel('A', True, cal_range, cal_coupling)
+                    # Block capture
+                    sample_rate = 100000.0 # 100k is good bandwidth
+                    num_samples = int(sample_rate * cal_duration)
+                    
+                    tb_idx = scope.calculate_timebase_index(cal_duration, num_samples)
+                    
+                    times, volts = scope.capture_block(tb_idx, num_samples)
+                    
+                    if len(times) > 0:
+                        st.session_state.cal_times = times
+                        st.session_state.cal_volts = volts
+                        st.session_state.cal_params = {
+                            'r_source': source_r_ohms,
+                            'gain': cal_gain
+                        }
+                        st.rerun()
+                    else:
+                        st.error("Capture returned empty.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+    
+    with c_btn2:
+        from analysis.signal_processing import load_noise_trace_csv
+        uploaded_cal = st.file_uploader("Load Existing Noise Trace", type=["csv"], key="load_cal_file")
+        if uploaded_cal:
+            try:
+                df_loaded, meta_loaded = load_noise_trace_csv(uploaded_cal)
+                if df_loaded is not None:
+                    # Map columns
+                    # Try to find time and voltage columns
+                    time_col = next((c for c in df_loaded.columns if 'time' in c.lower()), df_loaded.columns[0])
+                    volt_col = next((c for c in df_loaded.columns if 'volt' in c.lower() or 'signal' in c.lower()), df_loaded.columns[1])
+                    
+                    st.session_state.cal_times = df_loaded[time_col].values
+                    st.session_state.cal_volts = df_loaded[volt_col].values
+                    
+                    # Update widget states if in metadata
+                    if 'Source_Resistor_Ohms' in meta_loaded:
+                        st.session_state.cal_source_r = float(meta_loaded['Source_Resistor_Ohms'])
+                    elif 'r_source' in meta_loaded:
+                        st.session_state.cal_source_r = float(meta_loaded['r_source'])
+                        
+                    if 'TIA_Gain_VA' in meta_loaded:
+                        st.session_state.cal_gain_val = float(meta_loaded['TIA_Gain_VA'])
+                    elif 'gain' in meta_loaded:
+                        st.session_state.cal_gain_val = float(meta_loaded['gain'])
+
+                    st.session_state.cal_params = {
+                        'r_source': st.session_state.cal_source_r,
+                        'gain': st.session_state.cal_gain_val
+                    }
+                    st.success("Trace loaded successfully!")
+                    time.sleep(1)
+                    st.rerun()
                 else:
-                    st.error("Capture returned empty.")
-             except Exception as e:
-                 st.error(f"Error: {e}")
+                    st.error("Failed to parse CSV data.")
+            except Exception as e:
+                st.error(f"Load Error: {e}")
 
     # Persistent Analysis Block
     if 'cal_times' in st.session_state:
@@ -406,7 +447,7 @@ with detect_tab:
         d_resp = st.number_input("Responsivity (A/W)", step=0.1, key="det_resp", value=st.session_state.get('det_resp', 0.5))
     with col2:
         d_gain = st.number_input("TIA Gain (V/A)", format="%.2e", key="det_gain", value=st.session_state.get('det_gain', 1e6))
-        d_input_mode = st.radio("Noise Source", ["Live Capture", "Manual Entry"], horizontal=True, key="det_input_mode")
+        d_input_mode = st.radio("Noise Source", ["Live Capture", "Load from File", "Manual Entry"], horizontal=True, key="det_input_mode")
 
     st.divider()
     
@@ -468,6 +509,106 @@ with detect_tab:
             if mask.any():
                 measured_v_noise = df_psd[mask]['Voltage Noise (V/rtHz)'].median()
                 st.info(f"Representative Noise (Median in band): **{measured_v_noise*1e6:.2f} µV/√Hz**")
+    elif d_input_mode == "Load from File":
+         from analysis.signal_processing import load_noise_trace_csv
+         uploaded_det = st.file_uploader("Upload Noise Trace CSV (Raw or FFT)", type=["csv"], key="det_load_uploader")
+         
+         if uploaded_det:
+             try:
+                 df_loaded, meta_loaded = load_noise_trace_csv(uploaded_det)
+                 if df_loaded is not None:
+                     # Detect if it's raw or FFT
+                     cols = [c.lower() for c in df_loaded.columns]
+                     
+                     if any('freq' in c for c in cols) and any('noise' in c for c in cols):
+                         # It's an FFT/PSD file
+                         st.info("Loaded FFT/Spectrum data.")
+                         f_col = next(c for c in df_loaded.columns if 'freq' in c.lower())
+                         v_noise_col = next(c for c in df_loaded.columns if 'noise' in c.lower() and 'v' in c.lower())
+                         
+                         f_psd_loaded = df_loaded[f_col].values
+                         asd_v_loaded = df_loaded[v_noise_col].values
+                         
+                         # Update display logic
+                         st.markdown("---")
+                         st.write("### Analysis Band")
+                         b1, b2 = st.columns(2)
+                         with b1:
+                             f_s = st.number_input("Start Freq (Hz)", value=10.0, step=10.0, key="det_f1_loaded")
+                         with b2:
+                             f_e = st.number_input("End Freq (Hz)", value=1000.0, step=100.0, key="det_f2_loaded")
+                             
+                         df_psd = pd.DataFrame({'Freq (Hz)': f_psd_loaded, 'Voltage Noise (V/rtHz)': asd_v_loaded})
+                         # Filter common range
+                         df_psd = df_psd[(df_psd['Freq (Hz)'] > 1) & (df_psd['Freq (Hz)'] < 500000)] # Cap at 500kHz or similar
+                         
+                         fig_psd = px.line(df_psd, x='Freq (Hz)', y='Voltage Noise (V/rtHz)', log_x=True, log_y=True, title="Loaded Detector Noise PSD")
+                         fig_psd.add_vrect(x0=f_s, x1=f_e, fillcolor="rgba(0,100,255,0.1)", line_width=1, annotation_text="Selected Band")
+                         st.plotly_chart(fig_psd, use_container_width=True)
+                         
+                         mask = (df_psd['Freq (Hz)'] >= f_s) & (df_psd['Freq (Hz)'] <= f_e)
+                         if mask.any():
+                             measured_v_noise = df_psd[mask]['Voltage Noise (V/rtHz)'].median()
+                             st.info(f"Representative Noise (Median in band): **{measured_v_noise*1e6:.2f} µV/√Hz**")
+                             
+                     else:
+                         # It's a raw trace
+                         st.info("Loaded Raw Trace data.")
+                         time_col = next((c for c in df_loaded.columns if 'time' in c.lower()), df_loaded.columns[0])
+                         volt_col = next((c for c in df_loaded.columns if 'volt' in c.lower() or 'signal' in c.lower()), df_loaded.columns[1])
+                         
+                         t_vec = df_loaded[time_col].values
+                         v_vec = df_loaded[volt_col].values
+                         
+                         # Store in session state for reuse
+                         st.session_state.det_noise_data = {'t': t_vec, 'v': v_vec}
+                         
+                         # Now reuse the existing analysis logic (triggered by 'det_noise_data' presence)
+                         # However, since we are inside an if, we need to manually trigger the analysis or use the existing block below
+                         # Let's just set measured_v_noise similarly to the Live Capture block
+                         from scipy.signal import welch
+                         fs_actual = 1.0 / (t_vec[1] - t_vec[0])
+                         f_psd, p_psd = welch(v_vec, fs_actual, nperseg=min(len(v_vec), 4096))
+                         asd_v = np.sqrt(p_psd)
+                         
+                         st.markdown("---")
+                         st.write("### Analysis Band")
+                         b1, b2 = st.columns(2)
+                         with b1:
+                             f_s = st.number_input("Start Freq (Hz)", value=10.0, step=10.0, key="det_f1_raw")
+                         with b2:
+                             f_e = st.number_input("End Freq (Hz)", value=1000.0, step=100.0, key="det_f2_raw")
+                             
+                         df_psd = pd.DataFrame({'Freq (Hz)': f_psd, 'Voltage Noise (V/rtHz)': asd_v})
+                         df_psd = df_psd[(df_psd['Freq (Hz)'] > 1) & (df_psd['Freq (Hz)'] < fs_actual/2.1)]
+                         
+                         fig_psd = px.line(df_psd, x='Freq (Hz)', y='Voltage Noise (V/rtHz)', log_x=True, log_y=True, title="Detector Noise PSD (from Raw)")
+                         fig_psd.add_vrect(x0=f_s, x1=f_e, fillcolor="rgba(0,100,255,0.1)", line_width=1, annotation_text="Selected Band")
+                         st.plotly_chart(fig_psd, use_container_width=True)
+                         
+                         mask = (df_psd['Freq (Hz)'] >= f_s) & (df_psd['Freq (Hz)'] <= f_e)
+                         if mask.any():
+                             measured_v_noise = df_psd[mask]['Voltage Noise (V/rtHz)'].median()
+                             st.info(f"Representative Noise (Median in band): **{measured_v_noise*1e6:.2f} µV/√Hz**")
+                             
+                     # Try to update Gain/Area if in metadata
+                     rerun_needed = False
+                     if 'TIA_Gain_VA' in meta_loaded:
+                         st.session_state.det_gain = float(meta_loaded['TIA_Gain_VA'])
+                         rerun_needed = True
+                     if 'Active_Area_cm2' in meta_loaded:
+                         st.session_state.det_area = float(meta_loaded['Active_Area_cm2'])
+                         rerun_needed = True
+                     
+                     if rerun_needed:
+                         st.success("Metadata loaded and applied!")
+                         time.sleep(1)
+                         st.rerun()
+                         
+                 else:
+                     st.error("Failed to parse CSV data.")
+             except Exception as e:
+                 st.error(f"Load Error: {e}")
     else:
         # Manual Entry
         measured_v_noise = st.number_input("Voltage Noise Density (V/√Hz)", value=1e-6, format="%.2e", key="det_manual_v")
