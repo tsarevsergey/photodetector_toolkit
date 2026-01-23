@@ -35,6 +35,20 @@ init_pref("last_trace_file")
 init_pref("p_cal_wl", "last_led_wavelength")
 init_pref("p_ref_area", "last_ref_area")
 init_pref("p_dut_area", "last_dut_area")
+init_pref("p_num_cal", "last_num_cal")
+if st.session_state.p_num_cal is None:
+    st.session_state.p_num_cal = 1
+else:
+    st.session_state.p_num_cal = int(st.session_state.p_num_cal)
+
+# Dynamic initialization for calibration segments
+for i in range(10): # Pre-init up to 10 potential curves
+    init_pref(f"cal_file_{i}")
+    init_pref(f"cal_od_{i}")
+    if st.session_state[f"cal_od_{i}"] is None:
+        st.session_state[f"cal_od_{i}"] = 0.0
+    else:
+        st.session_state[f"cal_od_{i}"] = float(st.session_state[f"cal_od_{i}"])
 
 render_global_sidebar(settings)
 st.title("📊 Post-Processing & Analysis")
@@ -85,16 +99,24 @@ with tab_cal:
         
     with c2:
          st.subheader("2. Source Measurements")
-         num_cal = st.number_input("Number of Calibration Curves", min_value=1, max_value=10, value=1)
+         num_cal = st.number_input("Number of Calibration Curves", min_value=1, max_value=10, 
+                                   key="p_num_cal", value=st.session_state.p_num_cal, 
+                                   on_change=sync_setting, args=("p_num_cal", "last_num_cal"))
          
          cal_entries = []
          for i in range(num_cal):
              cc1, cc2 = st.columns([3, 1])
              with cc1:
                  # Keyed selection to allow different files per row
-                 row_file = st.selectbox(f"File {i+1}", options=data_files, key=f"cal_file_{i}")
+                 row_file = st.selectbox(f"File {i+1}", options=data_files, 
+                                         index=get_index(st.session_state.get(f"cal_file_{i}"), data_files),
+                                         key=f"cal_file_{i}",
+                                         on_change=sync_setting, args=(f"cal_file_{i}", f"cal_file_{i}"))
              with cc2:
-                 row_od = st.number_input(f"OD {i+1}", min_value=0.0, max_value=10.0, step=0.1, value=0.0, key=f"cal_od_{i}")
+                 row_od = st.number_input(f"OD {i+1}", min_value=0.0, max_value=10.0, step=0.1, 
+                                          key=f"cal_od_{i}",
+                                          value=float(st.session_state.get(f"cal_od_{i}", 0.0)),
+                                          on_change=sync_setting, args=(f"cal_od_{i}", f"cal_od_{i}"))
              cal_entries.append({'file': row_file, 'od': row_od})
          
     st.subheader("3. Settings")
@@ -384,7 +406,7 @@ with tab_ldr:
                 
                 # --- DYNAMIC RANGE (dB) ---
                 p_max, p_min = df_log['Optical_Power_W'].max(), df_log['Optical_Power_W'].min()
-                dr_db = 10 * np.log10(p_max / p_min)
+                dr_db = 20 * np.log10(p_max / p_min)
                 
                 # --- RESULTS METRICS ---
                 k1, k2, k3, k4 = st.columns(4)
@@ -409,10 +431,10 @@ with tab_ldr:
                      # Calculate Noise-Limited LDR (SNR=1)
                      enbw = 2.0 / t_int_ldr
                      p_snr1 = min_nep_hz * np.sqrt(enbw)
-                     dr_noise_db = 10 * np.log10(p_max / p_snr1)
+                     dr_noise_db = 20 * np.log10(p_max / p_snr1)
                      
                      k4.metric("Best NEP (rtHz)", f"{min_nep_hz:.2e} W/√Hz")
-                     st.metric("Noise-Limited LDR (SNR=1)", f"{dr_noise_db:.1f} dB", help=f"10*log10(Pmax / P_snr1). P_snr1 = {p_snr1:.2e} W at BW = {enbw:.2f} Hz ({t_int_ldr}s integration).")
+                     st.metric("Noise-Limited LDR (SNR=1)", f"{dr_noise_db:.1f} dB", help=f"20*log10(Pmax / P_snr1). P_snr1 = {p_snr1:.2e} W at BW = {enbw:.2f} Hz ({t_int_ldr}s integration).")
                 else:
                      min_nep = df_log['Sensitivity_W_SNR3'].min() if 'Sensitivity_W_SNR3' in df_log.columns else np.nan
                      k4.metric("Best NEP (SNR=3)", f"{min_nep:.2e} W")

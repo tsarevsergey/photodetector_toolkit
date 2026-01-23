@@ -64,14 +64,9 @@ def render_global_sidebar(settings):
     st.sidebar.checkbox("Suppress INFO Logs", key="pref_suppress_info", value=st.session_state.pref_suppress_info,
                         on_change=sync_global, args=("pref_suppress_info", "suppress_info_logs"))
 
-    # --- Debug Information ---
-    st.sidebar.divider()
-    with st.sidebar.expander("🛠️ System Debug", expanded=False):
-        st.write(f"**Config Path:** `{settings.get_config_path()}`")
-        if st.checkbox("Show Raw Settings", key="debug_show_raw"):
-            st.json(settings.settings)
     
     # --- Reload Mechanism ---
+
     st.sidebar.divider()
     if st.sidebar.button("🔄 Reload Settings from Config", help="Force refresh all UI values from settings.ini or config_beta.ini"):
         # 1. Force reload the physical settings file into memory
